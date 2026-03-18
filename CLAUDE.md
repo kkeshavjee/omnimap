@@ -5,7 +5,7 @@ OmniMap is a clinical terminology mapping platform built by Omni Health Nexus In
 It maps source EMR terms to target terminologies (SNOMED CT, LOINC, ATC, CCDD, ICD-10/11)
 using a dual-independent-review workflow with AI assistance.
 
-Full requirements are in `docs/PRD_v2.2.docx`. When in doubt, the PRD is the source of truth.
+Full requirements are in `docs/OmniMap_PRD_v2.3.docx`. When in doubt, the PRD is the source of truth.
 The runtime DAG (how OmniMap behaves at runtime) is in PRD Section 5.
 This file tells Claude Code what to BUILD and in what order.
 

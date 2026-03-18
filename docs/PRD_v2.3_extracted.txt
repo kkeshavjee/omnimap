@@ -1,0 +1,1045 @@
+OmniMap
+Clinical Terminology Mapping Platform
+Product Requirements Document
+
+Document Owner
+Omni Health Nexus Inc. (OHN)
+Version
+2.3 — Draft for Review
+Date
+March 2026
+Classification
+Confidential — Internal Use Only
+Regulatory Context
+ISO 13485:2016-aligned; Privacy obligations governed by agency agreements with data controllers
+Feeds Into
+OHN Regulated SaMD Pipeline
+
+
+1. Executive Summary
+OmniMap is a web-based clinical terminology mapping platform developed by Omni Health Nexus Inc. (OHN). It provides a structured, auditable, statistically rigorous workflow for mapping source clinical codes and terms to any configured target terminology — including SNOMED CT, LOINC, ATC, CCDD, ICD-10/11, and custom code systems — and exporting results in FHIR-compliant and other standard formats.
+
+OmniMap's core innovations are: (1) an EMR term sampling module that extracts, frequency-ranks, and stratifies source terms from uploaded data using Pareto and other sampling strategies, with intelligent management of long tail terms and net-new terms across successive extracts; (2) a dual-independent-review workflow with automated discrepancy escalation, a reviewer pool model, dynamic load balancing, and terminology affinity-based assignment; (3) a terminology-agnostic architecture supporting any source-to-target code system pairing; (4) a regex pattern library with AI-assisted generation trained on OHN's proprietary corpus, over-greedy detection, and conflict resolution; (5) a prospective validation holdout module with power-calculation-driven sample sizing for Precision, Recall, and F1 against a minimum threshold of 0.90; (6) a four-point validation scoring scheme (0–3) mapping directly to the confusion matrix; (7) an automation evaluation module for benchmarking AI/NLP matching tools; (8) a reviewer training and certification system with hard competency gates; and (9) a terminology version validation project type for managing drift across terminology releases.
+
+OmniMap is built on a multi-agent orchestrator-worker architecture following current industry best practices, with human-on-the-loop design throughout. It does not itself constitute a regulated Software as a Medical Device (SaMD). All data is processed under agency agreements with data controllers; OHN acts as data processor only.
+
+2. Background & Motivation
+2.1 The Terminology Mapping Problem
+Clinical data generated in healthcare settings is encoded using a heterogeneous mix of local, proprietary, and international code systems. Transforming this data into semantically interoperable assets requires systematic mapping between code systems. Target terminologies include SNOMED CT, LOINC, ATC, CCDD, ICD-10/11, and institutional code sets. This process is labour-intensive, error-prone, and typically lacks rigorous quality assurance. A further challenge is dataset scale: EMR term distributions follow a power law, with a small number of high-frequency terms accounting for the majority of clinical encounters, and a very long tail of low-frequency terms that are individually rare but collectively significant.
+
+2.2 Evidence Base: Barriers to Jurisdictional Scalability
+OHN's hands-on engagement with pan-Canadian EMR data (1.2 million de-identified patient records) and Snap2SNOMED-assisted mapping of the CPCSSN dataset, combined with a targeted review of peer-reviewed and gray literature, identified five structural barriers to jurisdiction-wide terminology adoption (Keshavjee & Guergachi, 2026):
+
+Workflow misalignment: Coding work falls on clinicians during time-pressed clinical encounters, creating friction rather than value.
+Insufficient localization: Standard terminologies lack Canadian synonyms, bilingual content, and curated value sets relevant to local practice.
+Inadequate error surfacing: Developer-facing services provide weak exposure of inactivation reasons, historical associations, and version changes, allowing mapping errors and terminology drift to accumulate undetected.
+Maturity model gaps: Existing implementation frameworks ignore complexity in early stages, causing technical debt to accumulate before basic mapping capability is achieved.
+Lack of structural incentives: Costs and benefits of terminology adoption are misaligned across vendors, clinics, and jurisdictions.
+
+OmniMap directly addresses barriers (1), (3), and (4) through workflow-embedded mapping, robust error surfacing and version drift detection, and a structured quality framework. Barriers (2) and (5) are addressed through the multi-terminology architecture and support for localized synonym sets and jurisdictional value sets.
+
+2.3 Limitations of Existing Tools
+Snap2SNOMED (CSIRO) represents the current state of the art but was not designed for multi-nomenclature use, reviewer pool management, or rigorous adjudication rate workflows. Additional limitations identified through operational use include: workflow rigidity with no dynamic term reallocation; no enforced reviewer independence; no formal discrepancy escalation mechanism; no regex generation or testing; no statistical power framework for validation; poor error correction ergonomics; and SNOMED CT-only support with no extensibility to other terminologies.
+
+3. Product Vision & Objectives
+3.1 Vision Statement
+OmniMap will be the reference-standard platform for collaborative clinical terminology mapping — combining
+statistically rigorous dual-review methodology, AI-assisted tooling grounded in human expert judgement,
+and a power-user interface to produce auditable, FHIR-ready mapping artefacts at jurisdictional scale.
+
+3.2 Strategic Objectives
+Ingest EMR term data via file upload and support multiple sampling strategies including random, stratified, frequency-ranked, and Pareto-based 80/20 cutoff selection, with intelligent long tail and net-new term management.
+Deliver a dual-independent-review workflow using a reviewer pool model with dynamic, affinity-aware allocation, automated discrepancy escalation, and terminology affinity tracking.
+Support one-to-one and one-to-many mappings with structured confidence and equivalence scoring across any configured source-to-target code system pairing.
+Provide a regex pattern library with AI-assisted generation trained on OHN's proprietary corpus, over-greedy detection, conflict resolution, and standalone export.
+Enable prospective validation holdout with power-calculation-driven sample sizing against a configurable F1 threshold (default 0.90, one-sided alpha = 0.05).
+Provide an automation evaluation module with four-point confusion matrix scoring (0–3) yielding Precision, Recall, and F1 from human-adjudicated gold standard labels.
+Support terminology version validation as a distinct project type with automated change detection and inactivation reason surfacing.
+Provide a reviewer training and certification system with hard competency gates per terminology domain.
+Handle all source data under agency agreements with data controllers; OHN holds no data controller obligations.
+Operate within OHN's ISO 13485-aligned QMS as a non-SaMD infrastructure component.
+
+4. Users & Personas
+4.1 Administrator
+Manages the full mapping project lifecycle: uploads EMR extracts, configures sampling strategies, selects target terminologies, assembles reviewer pools, monitors cross-project progress, manages the regex corpus, and approves final outputs. Requires a high-level dashboard with real-time visibility across all active projects.
+
+4.2 Reviewer (Expert Terminologist / Informaticist)
+The primary power user. Certified per terminology domain before assignment. Receives an independently allocated subset of source terms and maps them without visibility into other reviewers' work. Uses a keyboard-driven, AI-assisted interface optimised for high-volume expert throughput. Can view their own performance metrics and competency profile as a personal efficiency tool.
+
+4.3 Adjudicator
+A senior expert who resolves discrepancies automatically escalated when two reviewers disagree. Sees both reviewers' choices in anonymised form, with full terminology hierarchy context and reviewer rationale comments. Adjudicator decisions are auto-accepted as canonical mappings. Must not have served as a reviewer on the same project.
+
+4.4 Auditor
+Read-only access to all project data, mapping decisions, reviewer statistics, and audit logs. Supports internal quality review, regulatory inspection readiness, and academic reporting. Cannot modify any records.
+
+5. OmniMap Runtime DAG
+OmniMap's orchestrator executes all project workflows as a universal directed acyclic graph (DAG) with conditional branches per project type. Each node has defined inputs, outputs, and transition conditions. The orchestrator is event-driven: each node completion triggers the next via AWS EventBridge / SQS. Nodes are implemented as discrete Lambda functions. This section defines the runtime behaviour of the application — the development build plan derived from this DAG is in CLAUDE.md.
+
+5.1 Node 0 — PROJECT_INIT
+In:  Project config (name, type, target terminology, power calc params)
+     Optional: external mapping import file (prior mappings not produced by OmniMap)
+Out: Project record • OmniMap corpus snapshot for this project • external reference corpus (read-only)
+Note: External mappings are stored as read-only reference data for de-duplication.
+      They do not enter OmniMap's canonical output without going through the review workflow.
+Triggers: Node 1 — INGEST
+
+5.2 Node 1 — INGEST
+In:  EMR term extract file (CSV / Excel). Required: source code, display term, frequency count.
+Out: Raw term set with frequency counts
+Triggers: Node 2 — DEDUPLICATE
+
+5.3 Node 2 — DEDUPLICATE
+In:  Raw term set • OmniMap canonical corpus • external reference corpus (if imported at Node 0)
+Out: Working term set (already-mapped terms excluded)
+     Net-new terms → QUEUE_NET_NEW (staged for next project cycle — terminal for this cycle)
+Triggers: Node 3 — SAMPLE
+
+5.4 Node 3 — SAMPLE
+In:  Working term set • sampling strategy config (random / stratified / frequency / Pareto)
+Out: Sampled term set • long tail queue (prioritised by frequency trend + clinical domain risk)
+Triggers: Node 4 — HOLDOUT_DRAW
+
+5.5 Node 4 — HOLDOUT_DRAW + AUTOMATCH
+In:  Sampled term set • power calc params (default: F1 threshold=0.90, alpha=0.05, power=0.80)
+Out: Holdout set (locked — immutable after this node) • mapping pool (sampled set minus holdout)
+     Minimum task load per reviewer derived from power calculation at this node.
+
+AUTOMATCH PRE-CHECK (runs immediately after holdout draw, before allocation):
+  For each term in the mapping pool, system checks:
+  Does the source term canonical form exactly match the SNOMED CT FSN canonical form?
+  Canonical form = upper-case normalisation + punctuation stripping.
+  Phase 1: SNOMED CT FSN only. Other terminologies: Phase 2 decision.
+
+Branch A — Identical match (source canonical = SNOMED CT FSN canonical):
+  → Node 8 CANONICALISE directly. Bypasses reviewer queues entirely.
+  Recorded with auto-accept flag. Administrator can review auto-accepted batch.
+  Auto-accepted terms counted separately in quality metrics — not mixed with adjudication rate.
+
+Branch B — No identical match:
+  → Node 5 ALLOCATE → normal reviewer workflow.
+
+Triggers: Node 5 ALLOCATE (non-matching terms) and Node 8 CANONICALISE (auto-matched terms)
+
+5.6 Node 5 — ALLOCATE
+In:  Mapping pool (non-auto-matched terms only) • reviewer pool • affinity profiles • per-reviewer availability
+Out: Per-reviewer term queues (power-calc minimum load + long tail fill)
+     Every term assigned to exactly 2 reviewers independently.
+     Auto-matched terms (from Node 4 branch A) never enter reviewer queues.
+     Load balancer rebalances silently as reviewer availability changes.
+Triggers: Node 6 — MAP (for each reviewer queue item, event-driven)
+
+5.7 Node 6 — MAP
+In:  Source term • AI suggestions • regex corpus hints • cross-project memory
+Out: Mapping decision (target concept + relationship type + rationale) per reviewer
+Loop: Repeats for each term in the reviewer queue until all terms complete.
+      Event-driven: each reviewer submission triggers comparison check.
+Branch A — both reviewers agree  → Node 8: CANONICALISE
+Branch B — reviewers disagree    → Node 7: ADJUDICATE
+Note: Batch accept permitted for manually mapped term clusters only.
+      Batch accept of AI suggestions is prohibited.
+
+5.8 Node 7 — ADJUDICATE
+In:  Source term • Reviewer A decision (anonymised) • Reviewer B decision (anonymised)
+     Both rationale comments • terminology hierarchy context • regex corpus hints
+Out: Final mapping decision (adjudicator identity logged)
+Triggers: Node 8 — CANONICALISE (auto-accepted, no further approval required)
+
+5.9 Node 8 — CANONICALISE
+Canonicalisation applies the OmniMap output convention to every confirmed mapping before it enters the corpus. This node receives input from two paths: (a) agreed or adjudicated reviewer mappings from Node 7, and (b) auto-matched terms from Node 4 that bypassed reviewer queues entirely. Both paths produce identical canonical output; the auto-accept flag distinguishes them in the audit log.
+
+In:  Path A — Agreed or adjudicated mapping from Node 7
+     Path B — Auto-matched term from Node 4 (source canonical = SNOMED CT FSN canonical)
+Out: Canonical mapping record with the following conventions applied:
+     • Auto-accept flag set for Path B entries. Audit log records match basis.
+     • Source text: stored as original. Upper-case normalisation applied at match time only.
+     • Replacement text: lower-case.
+     • Replacement text wrapped in concept type XML closing tags:
+         Diagnosis    →  <dx>term</dx>
+         Medication   →  <med>term</med>
+         Procedure    →  <proc>term</proc>
+         Lab / Invest →  <lab>term</lab>
+         Symptom      →  <sx>term</sx>
+         Allergy      →  <allergy>term</allergy>
+         Device       →  <device>term</device>
+         Risk factor  →  <risk>term</risk>
+     • Qualifiers in separate preceding tag: <qual>severe</qual><dx>diabetes</dx>
+     • Audit log entry written (immutable, timestamped, user identity or system flag recorded)
+Branch — project type:
+     Standard mapping   → Node 9:  REGEX_PIPELINE
+     Automation eval    → Node 12: SCORE
+     Version validation → Node 13: DRIFT_REPORT
+
+5.10 Node 9 — REGEX_PIPELINE
+The regex pipeline executes as four sequential layers. Each layer operates on the output of the previous. Layers 1–3 use manually maintained corpora imported and versioned by the administrator. Layer 4 uses the OmniMap concept corpus grown by the review workflow.
+
+LAYER 1 — UPPER-CASE NORMALISATION (not stored — applied at match time only)
+  Source string converted to upper-case for all subsequent layers.
+  Original string preserved in database. Normalisation is never persisted.
+
+LAYER 2 — NEGATION REGEX (manually maintained corpus)
+  Tags negation context: NO HISTORY OF → <neg>no history of</neg>
+  Additive only — does not remove or reroute. Concept matching continues on full string.
+  Example output: <neg>no history of</neg> DIABETES MELLITUS TYPE 2
+
+LAYER 3 — QUALIFIER REGEX (manually maintained corpus)
+  Tags qualifiers as separate preceding tags: SEVERE → <qual>severe</qual>
+  Example output: <neg>no history of</neg> <qual>severe</qual> DIABETES MELLITUS TYPE 2
+
+LAYER 4 — MANUFACTURER REGEX (manually maintained corpus)
+  Strips manufacturer prefixes from drug names: APO-METFORMIN → METFORMIN
+  Pure substitution — no tagging. Collapses brand/generic/prefix variants to canonical form.
+  Enables concept regex to match METFORMIN once rather than all variants separately.
+
+LAYER 5 — CONCEPT REGEX (OmniMap corpus — grows via review workflow)
+  Maps upper-case terms to typed lower-case tagged replacement:
+  METFORMIN → <med>metformin</med>
+  Any remaining upper-case characters after substitution = incomplete match.
+
+Final output example:
+  <neg>no history of</neg> <qual>severe</qual> <med>metformin</med>
+
+In:  Canonical mapping • concept cluster • four regex corpora
+Out: Candidate regex pattern conforming to output convention
+     Regex run report (see Section 5.11)
+Triggers: Node 10 — REGEX_VALIDATE
+
+5.11 Node 10 — REGEX_VALIDATE + POST-RUN REPORTING
+Every regex pipeline execution produces a structured run report. Report items are routed to the reviewer interface or the administrator dashboard based on who needs to act.
+
+5.11.1 Reviewer-Facing Reports (shown in reviewer interface)
+Rule
+Condition
+Reviewer Action
+Notes
+R-01
+Any remaining upper-case characters after all five layers complete
+Review term — incomplete match. At least one layer failed to tag or replace this text.
+Even a single upper-case character triggers this. 'I' vs 'II' are clinically distinct — silent omission is not acceptable.
+R-02
+No match produced by any layer
+Review term — no pattern matched. Regex may need authoring or updating.
+System also checks for redundancy: if another pattern already covers this term, both are surfaced side-by-side so the reviewer can determine which to deprecate.
+R-03
+Each pipeline layer output shown sequentially
+Reviewer inspects each layer’s transformation to identify exactly where the pipeline went wrong.
+Layer-by-layer view: original → upper-case → after negation → after qualifier → after manufacturer → after concept.
+
+5.11.2 Administrator Dashboard Reports
+Report
+Description
+Action
+Greediness flag
+Match length / replacement length ratio exceeds configurable threshold (default 2.0x). Threshold is a configuration parameter, not hard-coded.
+Administrator reviews flagged patterns. Ratio is self-calibrating across term lengths.
+Redundant regex
+Two or more patterns match the same upper-cased source string. Upper-case normalisation makes true duplicates unambiguous — same input string, multiple matches.
+Administrator reviews both patterns and their target mappings. Decides which to retain, merge, or deprecate.
+No-match with competing pattern
+A source term produces no match, but another active pattern already covers it. Both the no-match pattern and the competing pattern are reported with their respective target codes.
+Administrator determines whether no-match pattern is broken (fix it) or redundant (deprecate it).
+Match position
+Did the regex match at the start, middle, or end of the string? Mid-string matches are more likely coincidental.
+Administrator reviews mid-string matches for false positive risk.
+Context window
+N characters before and after the matched substring surfaced for review.
+Administrator spots cases where surrounding text changes clinical meaning (e.g. 'NO DIABETES' matching DIABETES pattern).
+Match rate trend
+% of corpus terms matched by at least one pattern, trended over successive runs.
+Falling match rate signals corpus coverage gap. Rising rate after regex additions confirms improvement.
+Unmatched term frequency
+High-frequency terms that produced no match across all runs.
+High-frequency unmatched terms are priority gaps. Administrator initiates new mapping project.
+Concept type distribution
+Breakdown of matched terms by concept type tag (<dx>, <med>, <proc>, etc.).
+Identifies underserved concept types. Informs training corpus priorities.
+Pattern age
+Date each pattern was last validated against the corpus.
+Stale patterns flagged for re-validation, especially after terminology version updates.
+Pattern hit rate
+Number of corpus terms matched by each pattern across all runs.
+Zero-hit patterns over multiple runs → deprecation candidates. Very high-hit patterns overlapping others → redundancy candidates.
+Substitution consistency
+Does the same source term always resolve to the same replacement text across runs?
+Inconsistency signals a conflict resolution problem between overlapping patterns.
+
+In:  Candidate regex pattern • EMR corpus • all active patterns (for redundancy check)
+Out: Validated pattern (or flagged for revision) • regex run report
+Branch — over-greedy or conflict? → loop back to Node 9 for revision
+Branch — validated?            → Node 11: CORPUS_UPDATE then Node 12: SCORE (when pool complete)
+
+5.12 Node 11 — CORPUS_UPDATE
+In:  Validated regex pattern • concept cluster • canonical mapping
+Out: Regex corpus updated with new validated pattern (corpus flywheel)
+     Pattern versioned: version number, author, timestamp, validation status recorded.
+Triggers: Node 12 — SCORE (when full mapping pool is complete)
+
+5.13 Node 12 — SCORE
+In:  Holdout set • completed mappings • gold-standard labels (four-point: 0/1/2/3)
+     Project type branch:
+     Standard mapping   → prospective holdout scoring
+     Automation eval    → automated system output scoring
+     Version validation → drift impact scoring
+Out: Precision • Recall • F1 • 95% CIs • pass/fail vs configured threshold
+Triggers: Node 13 — EXPORT
+
+5.14 Node 13 — EXPORT
+In:  Canonical mappings • validated regex patterns • scores • run reports
+Out: FHIR ConceptMap (R4/R5) • Regex JSON library • CSV/Excel • Validation Report PDF
+     All exports include provenance metadata block.
+     Administrator notified of any prior exports containing superseded mappings.
+Triggers: END (project archived, mappings added to institutional corpus)
+
+6. Functional Requirements
+
+6.1 EMR Term Ingestion & Sampling
+Before mapping begins, OmniMap ingests source term data from uploaded EMR extracts and applies configurable sampling strategies to produce a working term set. The system manages de-duplication against prior mappings, handles net-new terms across successive uploads, and uses long tail terms to fill reviewer capacity above the power-determined minimum task load.
+
+ID
+Requirement
+Priority
+Notes
+FR-01
+Administrator uploads an EMR term extract as CSV or Excel. Required columns: source code, source display term, occurrence frequency count. Optional: clinical domain, source terminology identifier.
+Must Have
+Frequency count required for Pareto and frequency-based sampling. Terms without frequency can use random or stratified sampling only.
+FR-02
+On upload, system cross-references all terms against: (a) the completed mapping library, (b) all active project term pools, and (c) the regex corpus. Terms resolved by any of these sources are excluded from the working set and reported to the administrator as already-mapped.
+Must Have
+Prevents duplication of mapping effort across projects. Regex corpus matches are treated as pre-mapped.
+FR-03
+Net-new terms not present in any prior extract are identified and queued for the next project cycle. Administrator is shown a summary of net-new term volume and domain distribution.
+Must Have
+Net-new terms do not enter the current active project; they await the next Pareto analysis and power calculation.
+FR-04
+System displays the working term set as a frequency-sorted list with cumulative frequency percentage per row. List is sortable by frequency (descending default), cumulative percentage, and clinical domain.
+Must Have
+Enables administrator to visually identify the Pareto cutoff before sampling.
+FR-05
+Administrator selects a sampling strategy: (a) Random — simple random sample of N terms; (b) Stratified — random sample proportional to clinical domain; (c) Frequency-based — top N terms by occurrence; (d) Pareto — all terms up to an administrator-adjustable cumulative frequency threshold (default 80%). Strategies may be combined sequentially.
+Must Have
+e.g., Pareto first, then stratified within the Pareto set.
+FR-06
+Out-of-place terms (e.g., a procedure code appearing in a medication list) are flagged as data quality issues at ingestion and excluded from the working set. Administrator reviews and confirms exclusions before sampling proceeds.
+Must Have
+Out-of-place terms are a data quality issue, not a mapping decision. They are logged for upstream data quality reporting.
+FR-07
+Long tail terms (below the Pareto cutoff) are held in a prioritised queue. Priority score per term is computed from: (a) frequency trend across successive extracts (is this term growing?); (b) clinical domain risk flag (is it in a high-risk domain?). High-scoring terms are drawn first.
+Must Have
+Long tail queue persists across project cycles and is updated with each new extract upload.
+FR-08
+Minimum reviewer task load per project is determined by the power calculation (FR-17). Long tail terms are allocated to fill reviewer capacity above this minimum, drawn from the prioritised queue in order.
+Must Have
+Long tail allocation is automatic; administrator can review but not override individual term assignments.
+FR-09
+Administrator can view a sample summary before locking: total terms selected, % unique terms covered, % total occurrences covered, domain breakdown, and long tail terms allocated.
+Must Have
+Locking is required before reviewer assignment begins. Sample configuration is logged with timestamp.
+FR-10
+Administrator can regenerate the sample with different parameters before locking. All prior sample configurations are retained in the audit log. Regeneration is not permitted after reviewer assignment begins.
+Must Have
+ISO 13485 traceability requirement.
+
+6.2 Prospective Validation Holdout
+Before reviewer assignment begins, OmniMap draws a prospective holdout set from the sampled terms. This holdout is withheld from the main mapping workflow and later used as a gold-standard validation set to calculate Precision, Recall, and F1 against a minimum acceptable threshold. Sample size is determined by a one-sided statistical power analysis.
+
+ID
+Requirement
+Priority
+Notes
+FR-11
+Administrator configures validation holdout parameters before reviewer assignment. Default parameters: minimum acceptable F1 threshold = 0.90, power (1-beta) = 0.80, one-sided alpha = 0.05. All parameters are manually overridable per project.
+Must Have
+Hypothesis: H0: F1 <= threshold; H1: F1 > threshold. One-sided test is appropriate because the clinical and regulatory risk is asymmetric — an F1 below threshold has pipeline consequences; an F1 above threshold requires no action.
+FR-12
+System calculates required holdout sample size n using a one-sided power analysis framework for F1, based on the asymptotic variance of F1 (Goutte & Gaussier framework). Computed n is displayed to the administrator before confirmation.
+Must Have
+Power calculation method documented in system help text. Minimum n is enforced; administrator cannot reduce below the computed floor.
+FR-13
+System draws the holdout set using stratified random sampling from the full sampled term set, preserving clinical domain proportions. Holdout terms are removed from the main mapping pool and locked immediately.
+Must Have
+Holdout is drawn before any reviewer sees any term. No modifications permitted after locking.
+FR-14
+Administrator can view holdout set composition (size, domain breakdown, frequency coverage) but cannot view or modify individual term assignments until validation scoring is triggered after main project completion.
+Must Have
+Prevents selective exclusion of difficult terms.
+FR-15
+After main project completion, administrator triggers validation scoring. Holdout terms and their completed mappings are presented to two independent reviewers for gold-standard labelling using the four-point scoring scheme (FR-63 to FR-66).
+Must Have
+Holdout reviewers may differ from main project reviewers. Same blinded independence and adjudication workflow applies.
+FR-16
+System calculates Precision, Recall, F1, and 95% confidence intervals for each metric using gold-standard holdout labels. Results displayed in a Validation Report exportable as CSV and PDF.
+Must Have
+Precision = TP/(TP+FP); Recall = TP/(TP+FN); F1 = 2*P*R/(P+R). CIs: Wilson score for proportions; bootstrap for F1. Report includes pass/fail against the configured threshold.
+
+6.3 Project Management
+OmniMap supports multiple simultaneously active projects of different types. Each project type — standard mapping, automation evaluation, or terminology version validation — shares a common administrative framework but has distinct workflow configurations.
+
+ID
+Requirement
+Priority
+Notes
+FR-17
+Administrator creates a project with: name, description, project type (standard mapping / automation evaluation / terminology version validation), source terminology, target terminology, and version.
+Must Have
+Supported target terminologies: SNOMED CT, LOINC, ATC, CCDD, ICD-10/11, and custom. SNOMED CT is the default. Target terminology selection is locked once reviewer assignment begins.
+FR-18
+Multiple projects of any type may be active simultaneously. The administrator dashboard displays all active and completed projects with cross-project status: terms assigned, completed, in-progress, auto-accepted, adjudications pending, and estimated completion per project.
+Must Have
+Cross-project view is the administrator's primary workspace.
+FR-19
+System maintains a full, immutable audit log of all project-level and term-level actions: uploads, sample configurations, holdout draws, auto-accept decisions, assignments, mapping decisions, escalations, adjudications, corrections, and exports. Each entry records user identity or system flag, action type, and timestamp.
+Must Have
+Required for ISO 13485 traceability. Logs retained for minimum 7 years and exportable as CSV.
+FR-20
+Source terms support one-to-many mappings: a single source term may be mapped to multiple target concepts. Each target mapping includes a relationship type (e.g., equivalent to, broader than, narrower than). Relationship types are configurable per target terminology.
+Must Have
+For SNOMED CT: relationship types per MRCM constraints. For other terminologies: administrator-configured. One-to-one is the preferred outcome; one-to-many permitted when clinically necessary.
+FR-21
+Administrator can archive completed projects. Archived project mapping libraries remain available for de-duplication cross-referencing by future projects.
+Must Have
+Archived mappings are the system's institutional memory for de-duplication.
+FR-106
+System performs an identical-match auto-accept check after holdout draw (Node 4) and before reviewer allocation (Node 5). If the source term canonical form exactly matches the SNOMED CT FSN canonical form (upper-case normalisation + punctuation stripping), the term is auto-accepted and routed directly to Node 8 CANONICALISE, bypassing reviewer queues entirely.
+Must Have
+Phase 1: SNOMED CT FSN only. Other terminologies Phase 2 decision. Auto-accepted terms are recorded with an auto-accept flag in the audit log and reported separately in project quality metrics. They are never mixed into the adjudication rate.
+FR-107
+Administrator dashboard displays auto-accepted terms as a distinct category per project: count, % of mapping pool, and a reviewable list showing source term, matched FSN, and timestamp. Administrator can spot-check any auto-accepted mapping.
+Must Have
+Auto-accept is a bypass of the review workflow and must remain visible and auditable.
+
+6.4 Reviewer Pool, Assignment & Load Balancing
+OmniMap uses a pool-based reviewer model. The administrator assigns a named pool of certified reviewers to each project. The system dynamically allocates terms from the pool, ensuring every term receives exactly two independent reviews, with allocation weighted by reviewer availability, throughput history, and terminology affinity.
+
+ID
+Requirement
+Priority
+Notes
+FR-22
+Administrator assigns a pool of two or more certified reviewers to each project. Only reviewers holding a valid certification for the project's target terminology may be included in the pool.
+Must Have
+Hard certification gate enforced at pool assembly. Uncertified reviewers are not selectable for a given terminology domain.
+FR-23
+Each reviewer sets their own availability per project (e.g., terms per day or hours per week). System uses availability as an input to allocation and load balancing. Reviewer can update availability at any time; load balancer rebalances remaining unstarted terms accordingly.
+Must Have
+Capacity control rests with the reviewer, not the administrator.
+FR-24
+System allocates terms such that every term is independently assigned to exactly two reviewers from the pool. Neither reviewer sees the other's assignment or response at any time. Independence is enforced at the data access layer, not merely the UI.
+Must Have
+Core quality control constraint. Cannot be overridden.
+FR-25
+Minimum task load per reviewer is determined by the project's power calculation (FR-12) divided across the pool, weighted by reviewer availability and affinity score. Long tail terms fill remaining capacity above this minimum (FR-08).
+Must Have
+Allocation is recomputed dynamically as availability changes.
+FR-26
+Load balancer automatically reassigns unstarted terms from lower-capacity reviewers to higher-capacity pool members when a reviewer's availability is exhausted. Reassignment is silent — no notification, no blame, no administrator intervention required. Independence constraint is maintained throughout.
+Must Have
+No-blame automatic reassignment. Administrator sees the reallocation in the dashboard but no alert is triggered.
+FR-27
+When a reviewer is assigned to multiple simultaneous projects, allocation across projects respects their per-project availability settings. System does not enforce cross-project capacity limits; the reviewer is responsible for setting realistic availability per project.
+Must Have
+Reviewer self-manages cross-project load.
+FR-28
+Administrator receives a real-time cross-project dashboard showing per-reviewer and per-project: terms assigned, completed, in-progress, estimated completion, adjudication rate, and current affinity score.
+Must Have
+Read-only view for administrator. No allocation override capability from this view.
+
+6.5 Reviewer Interface & Productivity Tools
+The reviewer interface is purpose-built for expert power users who map high volumes of clinical terms. It combines keyboard-driven navigation, AI-assisted suggestions, within-session and cross-project memory, and corpus-based regex hints. The design principle is to accelerate expert judgement, not to replace it.
+
+6.5.1 Core Mapping Interface
+ID
+Requirement
+Priority
+Notes
+FR-29
+Reviewer sees only their own assigned terms. No visibility into any other reviewer's queue or responses at any time, enforced at the data access layer.
+Must Have
+Core independence constraint.
+FR-30
+Reviewer interface supports full keyboard navigation: move between terms, trigger search, confirm mapping, flag unmappable, and advance to next term without mouse.
+Must Have
+Essential for high-volume expert sessions.
+FR-31
+Reviewer can search the configured target terminology in real-time using a fast, debounced search interface. For SNOMED CT: ECL query support required. For all other terminologies: free-text and code search required. Results returned within 500ms at 95th percentile.
+Must Have
+Terminology-agnostic search layer.
+FR-32
+Reviewer can select one or more target concepts per source term with a relationship type per mapping. Relationship type options are configurable per target terminology.
+Must Have
+One-to-many supported; one-to-one preferred.
+FR-33
+Reviewer can flag a source term as unmappable with a mandatory reason code. Unmappable flags are escalated identically to mapping disagreements.
+Must Have
+
+FR-34
+Reviewer can add a free-text rationale comment to any mapping decision or unmappable flag. Rationale is surfaced to the adjudicator during escalation.
+Should Have
+
+FR-35
+System auto-saves reviewer progress after every mapping action. No explicit save required.
+Must Have
+
+
+6.5.2 AI-Assisted Speed Tools
+ID
+Requirement
+Priority
+Notes
+FR-36
+AI suggestion engine displays ranked candidate target concepts for each source term before the reviewer initiates a manual search. Suggestions are generated by the semantic similarity ranking agent (Section 7).
+Must Have
+AI suggestions are advisory. Reviewer must actively accept or ignore each suggestion.
+FR-37
+Reviewer can accept an AI suggestion with a single keystroke or click. Accepted AI suggestions are recorded as reviewer-confirmed mappings, not as AI-generated mappings, in the audit log.
+Must Have
+One-click accept is a speed tool, not a bypass. Human confirmation is always required.
+FR-38
+Batch accept is supported for manually mapped terms only: reviewer uses keyword search to find a cluster of near-identical terms, reviews each term in the cluster, and may apply the same mapping to all confirmed terms in a single action. Batch accept is explicitly prohibited for AI-generated suggestions. This is a deliberate quality control decision: current AI/NLP models are unreliable for clinical terminology mapping and systematically overconfident; lexical similarity does not imply semantic equivalence.
+Must Have
+Rationale must be preserved in the PRD and communicated to development team to prevent re-introduction of AI batch accept in future releases.
+FR-39
+Reviewer can perform a keyword search across their full assigned term list to surface all similar or near-identical terms simultaneously, enabling efficient cluster review.
+Must Have
+Supports the manual batch accept workflow (FR-38).
+FR-40
+Keyboard shortcuts are provided for all common reviewer actions: accept AI suggestion, reject AI suggestion, open manual search, confirm mapping, flag unmappable, next term, previous term, open keyword search, and open scratchpad. Shortcuts are configurable per reviewer.
+Must Have
+Configurable shortcuts persist across sessions as part of reviewer preferences.
+
+6.5.3 Consistency & Memory Tools
+ID
+Requirement
+Priority
+Notes
+FR-41
+Within-session memory: when a reviewer maps a term, the system surfaces any similar terms mapped earlier in the same session alongside the current term, including the mapping chosen. Reviewer can reference but must independently confirm.
+Must Have
+
+FR-42
+Cross-project memory: if the current source term was mapped in a prior completed project, the prior mapping (target concept and relationship type) is surfaced as a reference. Reviewer must independently confirm or override.
+Must Have
+Cross-project memory supports consistency but does not pre-populate the mapping field.
+FR-43
+Near-duplicate flagging: terms in the reviewer's queue that are near-identical to already-mapped terms (within-session or cross-project) are flagged automatically, allowing the reviewer to review them as a cluster.
+Must Have
+Near-duplicate detection uses edit distance and token overlap; threshold is configurable.
+FR-44
+Regex corpus suggestion: relevant patterns from the regex corpus are surfaced for the current source term, showing the matched pattern, the associated target code, and the match confidence. Reviewer can use this as a mapping reference.
+Should Have
+Corpus suggestion is a reference tool, not a mapping action. Reviewer must confirm independently.
+FR-45
+Term list is sortable by: frequency (descending), alphabetical, clinical domain, AI suggestion confidence, near-duplicate status, and completion status.
+Must Have
+Enables reviewer to prioritise their work queue.
+
+6.5.4 Interface & Preferences
+ID
+Requirement
+Priority
+Notes
+FR-46
+Split-screen layout: source term context and occurrence frequency displayed on the left panel; terminology search and AI suggestions on the right panel.
+Must Have
+
+FR-47
+Collapsible terminology hierarchy browser accessible from the search panel, allowing reviewers to explore parent/child concept relationships for candidate target concepts.
+Must Have
+
+FR-48
+Adjustable font size and display density to accommodate reviewer preferences and extended session ergonomics.
+Should Have
+
+FR-49
+Personal scratchpad per session: reviewer can maintain free-text notes visible only to themselves during the session.
+Should Have
+Scratchpad content is not stored in the audit log.
+FR-50
+Reviewer personal preferences (display density, font size, default search mode, keyboard shortcut configuration) persist across sessions.
+Should Have
+
+FR-51
+Reviewer personal metrics dashboard: displays adjudication rate trend, adjudication override rate trend, throughput (terms per hour), affinity scores by terminology, and comparison to their own historical baseline. Framed explicitly as a personal efficiency tool. Reviewer cannot see other reviewers' metrics.
+Must Have
+Metrics are for self-improvement, not performance management. Framing must be preserved in UI copy.
+
+6.6 Discrepancy Detection & Adjudication
+ID
+Requirement
+Priority
+Notes
+FR-52
+When both reviewers complete a term, system automatically compares their selections. Identical target concept and relationship type = Agreed; term is canonically mapped with no further action.
+Must Have
+
+FR-53
+Any disagreement (different concept, different relationship type, one flags unmappable) triggers automatic escalation to the Adjudicator queue. No administrator intervention required.
+Must Have
+
+FR-54
+Adjudicator sees: source term, Reviewer A's mapping (anonymised), Reviewer B's mapping (anonymised), both rationale comments, relevant regex corpus suggestions, and full target terminology hierarchy context for proposed concepts. Reviewer identities are not revealed.
+Must Have
+
+FR-55
+Adjudicator selects or proposes a final mapping. Decision is immediately auto-accepted as the canonical mapping. Logged with adjudicator identity, decision, and timestamp.
+Must Have
+No further administrator approval required.
+FR-56
+System tracks and reports adjudication rate by project, reviewer (in aggregate, not attributed to individuals in shared reports), and clinical domain. Adjudication rate is a key ISO 13485 quality metric.
+Must Have
+Individual reviewer adjudication rates visible to administrator privately, not in shared project reports.
+
+6.7 Error Correction Workflow
+OmniMap provides fast, low-friction error correction pathways. Speed of correction is a design priority — a known error that persists due to process overhead is a quality risk.
+
+ID
+Requirement
+Priority
+Notes
+FR-57
+Original reviewer may self-correct any mapping before final submission (before the second reviewer has completed the same term).
+Must Have
+Self-correction before submission requires no approval.
+FR-58
+Any reviewer, administrator, or adjudicator may flag a completed mapping for correction post-submission.
+Must Have
+Flagging initiates the correction workflow; it does not modify the mapping.
+FR-59
+Two correction pathways are supported: (a) Re-open — term is reassigned to a single designated reviewer for correction; fast and targeted, no full dual-review cycle required. (b) Direct override — corrector proposes a new mapping with mandatory documented rationale; immediately accepted without re-review. Designed for senior expert power users.
+Must Have
+Pathway selection is made by the administrator or adjudicator initiating the correction.
+FR-60
+Prior mapping is archived and flagged as superseded. Full version history is retained. No mapping record is ever deleted or overwritten.
+Must Have
+ISO 13485 traceability requirement. Correction logged with: corrector identity, pathway used, rationale, and timestamp.
+FR-61
+Correction cascade: any regex patterns derived from a corrected mapping are automatically flagged for review. Any prior exports containing the superseded mapping are logged and surfaced to the administrator for data controller notification.
+Must Have
+Administrator is responsible for notifying the data controller; OmniMap surfaces the information but does not send external notifications.
+
+6.8 Regex Pattern Library
+The regex pattern library bridges synonym variation and confirmed mappings, enabling scalable matching of free-text EMR terms to target codes without requiring exhaustive manual mapping of every surface form. Patterns are managed at the concept cluster level (one pattern per synonym group mapped to a target code) and are both AI-generated and human-editable.
+
+6.8.1 Pattern Generation & Management
+ID
+Requirement
+Priority
+Notes
+FR-62
+The system auto-generates a candidate regex pattern for each confirmed concept cluster (synonym group mapped to a target code) using the AI regex generation agent (Section 7). The reviewer or administrator can edit, replace, or discard the generated pattern.
+Must Have
+Auto-generation is a starting point, not a final output. Human review of every pattern is required.
+FR-63
+Patterns are managed at concept cluster granularity: one pattern per synonym group per target code. A single source term may belong to multiple clusters if it maps to multiple target codes.
+Must Have
+
+FR-64
+Pattern library is versioned. Each pattern version records: pattern text, author (AI or human identity), creation timestamp, associated concept cluster, and validation status.
+Must Have
+ISO 13485 traceability.
+
+6.8.2 Pattern Testing & Validation
+ID
+Requirement
+Priority
+Notes
+FR-65
+Administrator or reviewer can test any pattern against the uploaded EMR term corpus. System displays: match rate (% of corpus terms matched), a term-level list highlighting matched and unmatched terms, and for each match: the matched substring length and the length of the replacement term or mapped concept display name.
+Must Have
+Match-length vs. replacement-length comparison detects over-greedy patterns: a pattern matching significantly more characters than the replacement term suggests it is capturing unintended context.
+FR-66
+System flags patterns where the mean matched substring length exceeds the mean replacement term length by a configurable threshold (default: 20%). Flagged patterns are highlighted for human review before being promoted to active status.
+Must Have
+Over-greedy detection threshold is configurable per project.
+FR-67
+Conflict detection: if two or more patterns from different concept clusters match the same EMR term, the system applies longest-match-wins resolution. Conflicts are logged and surfaced to the administrator for awareness.
+Must Have
+Longest-match-wins is applied automatically; administrator is informed but no manual resolution is required unless the administrator chooses to intervene.
+
+6.8.3 Regex Corpus & AI Training
+ID
+Requirement
+Priority
+Notes
+FR-68
+OHN's existing proprietary regex corpus (fields: original text, regex pattern, SNOMED CT term; optional: match/no-match test cases) is importable as the seed training dataset for the AI regex generation agent.
+Must Have
+Corpus is a proprietary OHN asset. Access is restricted to Administrator and system-level agents.
+FR-69
+Schema for the regex corpus is extensible to support additional target terminologies beyond SNOMED CT as OmniMap expands to multi-terminology regex generation.
+Must Have
+Extension requires administrator configuration; no code change required.
+FR-70
+Validated regex patterns produced in OmniMap (patterns that have passed testing, over-greedy review, and conflict resolution) are automatically contributed back to the corpus after adjudicator or administrator sign-off. This creates a self-reinforcing corpus that grows with each project.
+Must Have
+Corpus flywheel: quality-controlled OmniMap output continuously improves future AI generation.
+FR-71
+Regex corpus is versioned with full history. Access is controlled by RBAC. Corpus export is available to Administrator only and is logged in the audit trail.
+Must Have
+Corpus is treated as a proprietary IP asset. Open question: governance model for corpus as OmniMap scales to commercial licensing.
+
+6.8.4 Regex Export
+ID
+Requirement
+Priority
+Notes
+FR-72
+Validated regex patterns are exportable as a standalone JSON artefact: array of objects with fields {pattern, target_code, target_display, terminology, cluster_id, version}. Export is separate from and complementary to the FHIR ConceptMap export.
+Must Have
+JSON regex library is the primary integration artefact for OHN's downstream pipeline.
+
+6.9 Four-Point Validation Scoring Scheme
+All validation activities in OmniMap — prospective holdout scoring and automation evaluation — use a four-point scheme that maps directly to the standard information retrieval confusion matrix, enabling unambiguous calculation of Precision, Recall, and F1.
+
+ID
+Requirement
+Priority
+Notes
+FR-73
+Score 0 — Correctly not coded (True Negative): the term has no appropriate target concept and was correctly left unmapped.
+Must Have
+
+FR-74
+Score 1 — Correctly coded (True Positive): the term was mapped to the correct target concept.
+Must Have
+
+FR-75
+Score 2 — Incorrectly coded (False Positive): a mapping was assigned, but no valid or correct target concept exists or was chosen.
+Must Have
+
+FR-76
+Score 3 — Incorrectly not coded (False Negative): the term was left unmapped, but a valid target concept exists and should have been found.
+Must Have
+
+FR-77
+Precision = TP / (TP + FP) = count(1) / (count(1) + count(2)). Recall = TP / (TP + FN) = count(1) / (count(1) + count(3)). F1 = 2 * Precision * Recall / (Precision + Recall). All calculated directly from four-point labels with no Partial category.
+Must Have
+Clean confusion matrix mapping. No partial match scoring.
+
+6.10 Automation Evaluation Module
+The Automation Evaluation Module enables OHN and clients to benchmark AI/NLP term-to-code matching tools against a human-adjudicated gold standard, producing statistically grounded Precision, Recall, and F1 scores. This supports evidence-based selection, tuning, and longitudinal monitoring of automation tools.
+
+ID
+Requirement
+Priority
+Notes
+FR-78
+Administrator creates an Automation Evaluation project by uploading: (a) source terms, (b) the automated system's proposed code matches per term, and (c) target terminology definition.
+Must Have
+
+FR-79
+System assigns each source term to two independent human reviewers who label each automated match using the four-point scoring scheme (FR-73–76) without seeing each other's labels.
+Must Have
+Same blinded independence constraints as standard mapping workflow (FR-24 applies).
+FR-80
+Agreed labels are accepted as gold standard. Disagreements are escalated to an adjudicator using the standard adjudication workflow (FR-52–55).
+Must Have
+
+FR-81
+System calculates Precision, Recall, F1, and 95% confidence intervals from gold-standard labels per project and optionally per clinical domain.
+Must Have
+
+FR-82
+System produces a downloadable Automation Evaluation Report: overall and per-domain Precision/Recall/F1, adjudication rate, number of adjudicated terms, and term-level detail table. Exportable as CSV and PDF.
+Must Have
+
+FR-83
+Automation Evaluation projects are versioned. Prior evaluation results are retained for longitudinal comparison across model versions.
+Should Have
+Enables tracking of improvement or regression over time.
+
+6.11 Terminology Version Validation
+Terminology Version Validation is a distinct project type that identifies which existing mappings have been affected by a new terminology release, and routes only those affected mappings for human re-validation. This directly addresses the error surfacing barrier identified in Keshavjee & Guergachi (2026).
+
+ID
+Requirement
+Priority
+Notes
+FR-84
+Administrator creates a Terminology Version Validation project by specifying: the terminology, the prior version, and the new version. System ingests either two terminology release files for comparison or a change log from the terminology API — configurable per terminology.
+Must Have
+SNOMED CT: both file comparison and change log API supported. Other terminologies: configurable at setup.
+FR-85
+System detects and flags mappings affected by five change types: (a) Inactivated concepts; (b) Concept merges; (c) Definition changes (FSN or preferred term); (d) Relationship / hierarchy changes; (e) New concepts added. Each change type is reported separately.
+Must Have
+New concepts added is treated as 'existing mapping may be suboptimal' — flagged for optional review, not mandatory re-validation.
+FR-86
+For inactivated concepts, system surfaces the inactivation reason and all historical associations (e.g., 'replaced by,' 'possibly equivalent to') alongside the flag, giving reviewers the context to make an informed re-validation decision.
+Must Have
+Directly addresses Barrier 3 from Keshavjee & Guergachi (2026): inadequate error surfacing.
+FR-87
+All flagged mappings are routed for human re-validation using the standard dual-review and adjudication workflow. No mappings are auto-invalidated; human judgement determines whether each affected mapping remains valid, requires update, or should be retired.
+Must Have
+Flag does not imply invalidity. Human decision is always required.
+FR-88
+Terminology Version Validation projects produce a change impact report: total affected mappings, breakdown by change type, re-validation outcomes (confirmed valid / updated / retired), and updated mapping library version.
+Must Have
+
+
+6.12 Reviewer Quality Monitoring & Retraining
+ID
+Requirement
+Priority
+Notes
+FR-89
+System continuously monitors per-reviewer adjudication rate and adjudication override rate across all active projects. Thresholds are configurable per terminology domain.
+Must Have
+
+FR-90
+When either metric crosses its threshold, the reviewer's profile is automatically flagged for administrator review. No automatic reduction of allocation or reassignment is triggered — human judgement drives next steps.
+Must Have
+No-blame design. System surfaces the data; administrator manages the conversation.
+FR-91
+Administrator is notified privately. The reviewer is not notified by the system. The quality conversation occurs through normal management channels.
+Must Have
+
+FR-92
+Administrator receives a coaching data summary: adjudication rate trend, override rate trend, affinity scores by terminology, comparison against pool averages, and relevant completed project history. All data is framed as development support, not performance evaluation.
+Must Have
+Framing must be preserved in UI copy and administrator documentation.
+FR-93
+Retraining outcomes are logged against the reviewer's competency profile: date, terminology domains covered, and post-retraining metric trend.
+Should Have
+Enables longitudinal tracking of improvement.
+
+6.13 Reviewer Training & Certification
+Certification is a hard prerequisite for assignment to any live project in a given terminology domain. OmniMap enforces this at the system level; administrators cannot override it.
+
+ID
+Requirement
+Priority
+Notes
+FR-94
+Reviewer must hold a valid certification for a terminology domain before they can be assigned to any project using that terminology. This is enforced as a hard system gate — uncertified reviewers are not selectable in pool assembly.
+Must Have
+No exceptions. Certification is per terminology domain; a reviewer certified for SNOMED CT is not automatically certified for LOINC.
+FR-95
+Training curriculum includes: (a) General mapping principles, workflow, and dual-independent-review methodology; (b) Terminology-specific modules per supported code system; (c) Four-point validation scoring scheme with worked examples; (d) Reviewer productivity tools including keyboard shortcuts, AI suggestion workflow, batch accept rules, near-duplicate flagging, and corpus regex suggestions.
+Must Have
+All modules delivered in-app as guided tutorials.
+FR-96
+Practice mapping sets with known correct answers are provided for each terminology domain. OHN authors and maintains central practice sets. Administrators may create institution-specific practice sets for custom or local terminologies.
+Must Have
+Practice set answers are not visible to the reviewer during the practice session.
+FR-97
+Certification is granted when the reviewer achieves a passing score on the terminology-specific practice set. Passing threshold is configurable by OHN per terminology. Failed attempts may be retaken; attempt count and scores are logged.
+Must Have
+
+FR-98
+Certification has a configurable expiry period. Reviewers may be required to recertify after a defined interval or after a major terminology version release. Expiry is flagged in advance; expired reviewers are blocked from new assignments until recertified.
+Should Have
+Expiry policy is set by OHN centrally and may be overridden per institution by administrator.
+FR-99
+Full competency profile per reviewer: tutorials completed, practice set scores by terminology, certification dates and expiry, and live project affinity metrics (adjudication rate, override rate, throughput). Profile is accessible to the reviewer (personal view) and administrator (pool assembly view).
+Must Have
+Reviewer sees only their own profile. Administrator sees all profiles in their instance.
+
+6.14 Export & Integration
+ID
+Requirement
+Priority
+Notes
+FR-100
+System exports completed mappings as a FHIR ConceptMap resource (R4 and R5), conformant to HL7 FHIR specification.
+Must Have
+Primary export format for OHN pipeline integration.
+FR-101
+System exports validated regex patterns as a standalone JSON artefact: {pattern, target_code, target_display, terminology, cluster_id, version} per entry.
+Must Have
+Primary integration artefact for downstream text matching pipeline.
+FR-102
+System exports mappings as CSV or Excel with configurable column selection.
+Must Have
+Supports ad hoc analysis and stakeholder reporting.
+FR-103
+Export configuration is saveable as a named template per project type.
+Should Have
+Reduces per-project setup overhead.
+FR-104
+All exports include a provenance metadata block: project name, reviewer IDs (hashed), export timestamp, terminology version, and OmniMap version.
+Must Have
+Required for regulatory traceability.
+FR-105
+System provides a REST API for programmatic access to project status and approved mappings.
+Should Have
+Required for OHN pipeline automation in Phase 2.
+
+7. Non-Functional Requirements
+7.1 Performance
+Terminology concept search must return ranked results within 500ms at the 95th percentile for any supported terminology, including SNOMED CT releases of up to 350,000 active concepts.
+System must support concurrent sessions for up to 20 simultaneous reviewers across all active projects without performance degradation.
+Page load time for the reviewer interface must not exceed 2 seconds on a standard broadband connection.
+Regex corpus pattern testing against a 50,000-term EMR corpus must complete within 10 seconds.
+
+7.2 Privacy & Security
+All data in transit encrypted using TLS 1.2 or higher. All data at rest encrypted using AES-256 or equivalent.
+Access is role-based (RBAC): Administrator, Reviewer, Adjudicator, Auditor. No cross-role data access is permitted at the application or database layer.
+OHN processes source data as a data processor under agency agreements with data controllers. Privacy obligations — including breach notification under PHIPA, HIPAA, or other applicable legislation — rest with the data controller. OmniMap supports these obligations by maintaining complete audit logs and enabling timely incident reporting to the data controller upon request.
+Source terms must be de-identified codes and display strings. OmniMap must not be used to process identifiable patient data without explicit data controller instruction documented in the applicable agency agreement.
+All authentication must use multi-factor authentication (MFA) for Administrator and Adjudicator roles.
+
+7.3 Auditability & Quality
+Every state-changing action is written to an immutable, timestamped audit log with user identity (FR-19).
+Audit logs retained for minimum 7 years and exportable as CSV.
+System generates a quality report per project: total terms, adjudication rate, adjudication rate, unmappable rate, adjudicator override rate, and validation F1 score against threshold.
+
+7.4 Reliability & Availability
+Target uptime: 99.5% excluding scheduled maintenance windows.
+Data backed up daily with point-in-time recovery capability.
+System gracefully handles reviewer session interruption without loss of completed mappings. AI agent DAG sub-goal completion state is persisted for resumption from last successful node.
+
+7.5 Regulatory Alignment
+OmniMap operates as a non-SaMD infrastructure tool, developed under OHN's ISO 13485:2016-aligned Quality Management System (QM-01).
+Software lifecycle documentation conforms to IEC 62304 Class B as a minimum.
+Risk management per ISO 14971 for downstream risks from mapping errors propagating into OHN's SaMD outputs.
+
+7.6 Data Persistence Requirements
+The following constraints must be satisfied by the database design. Schema-level implementation is left to the development team.
+
+Mapping records are immutable once written. Corrections create new versioned records; prior records are archived and flagged as superseded. No mapping record is ever deleted or overwritten.
+Every state-changing action is written to an append-only audit log with user identity, action type, entity reference, and UTC timestamp. The audit log table must not support UPDATE or DELETE operations at the database layer.
+Audit log records are retained for a minimum of 7 years and must be exportable as CSV without requiring application-layer access.
+The regex corpus is versioned: each pattern record carries a version number, authorship (user ID or system agent identifier), creation timestamp, associated concept cluster ID, and validation status. Prior versions are retained on update.
+Reviewer competency profiles and affinity scores are persisted across sessions and projects. Affinity scores are recalculated incrementally after each project completion and stored as snapshots with timestamps.
+The prospective holdout set assignment is locked at draw time. The database must enforce that holdout term records cannot be modified after locking, and cannot be returned in reviewer assignment queries until validation scoring is triggered.
+De-duplication cross-reference queries must perform efficiently across the full mapping library spanning all archived projects. Indexing strategy must support high-cardinality source code lookups within 100ms at 95th percentile.
+Net-new term queue and long tail queue are persistent across sessions and project cycles. Queue priority scores are stored and recalculated on each new extract upload.
+The database must support point-in-time recovery to any moment within the last 30 days, and full daily backups retained for 7 years.
+
+8. System Architecture Overview
+8.1 Architectural Principles
+OmniMap is a cloud-hosted SaaS application built on a multi-agent orchestrator-worker architecture following current industry best practices (Anthropic Engineering, 2025; O'Reilly Radar, 2026). The core principle is hybrid control: a central orchestrator owns project state and workflow sequencing; specialized worker agents handle scoped sub-tasks with their own tools and failure boundaries. Human reviewers and adjudicators are explicitly positioned as the decision-making layer throughout — human-on-the-loop, not human-out-of-the-loop.
+
+Task-Decoupled Planning (TDP) principles (Li et al., arXiv:2601.07577, 2026) are applied as a software construction methodology: each module is built with scoped context, local failure containment, and no cascading errors across module boundaries. This is an architectural construction principle, not a description of AI agent behaviour.
+
+8.2 System Components
+Orchestrator: Central workflow engine managing project state, reviewer pool allocation, load balancing, de-duplication, and sequencing across all modules. Single point of authority for workflow decisions. Delegates execution to specialized worker agents.
+EMR Ingestion & Sampling Agent: Accepts CSV/Excel uploads, runs de-duplication against the mapping library and regex corpus, applies sampling strategies, manages the long tail queue, and draws the prospective validation holdout.
+Reviewer Interface (SPA): Single-page application delivering the reviewer, administrator, and adjudicator interfaces. Reviewer interface optimised for keyboard-driven, low-latency expert use with split-screen layout, AI suggestions, and consistency tools.
+Terminology Service: Pluggable multi-nomenclature adapter layer. For SNOMED CT: Snowstorm-based browser with ECL support. For LOINC, ATC, CCDD, ICD-10/11, and custom terminologies: code lookup, display term retrieval, and configurable relationship type sets. New adapters added without core platform changes.
+AI Suggestion Agent: Generates ranked candidate target concept suggestions for each source term using semantic similarity ranking (NLP embeddings + confidence scoring). Suggestions are advisory; every suggestion requires explicit reviewer confirmation. Agent operates with scoped context per term — it does not receive full session history.
+Regex Generation Agent: Generates candidate regex patterns for confirmed concept clusters, trained on OHN's proprietary regex corpus. Output is always reviewed and validated by a human before promotion to active status. Agent is retrained as validated patterns are contributed back to the corpus.
+Discrepancy & Adjudication Engine: Compares reviewer pairs, detects disagreements, routes to adjudicator queue, and records auto-accepted adjudicator decisions.
+Validation & Scoring Engine: Executes four-point confusion matrix scoring for prospective holdout and automation evaluation projects; calculates Precision, Recall, F1, and confidence intervals.
+Terminology Version Diff Agent: Compares terminology release files or ingests change log APIs to detect inactivations, merges, definition changes, hierarchy changes, and new concepts. Surfaces inactivation reasons and historical associations.
+Export Engine: Generates FHIR ConceptMap JSON/XML, regex JSON library, CSV, Excel, and PDF reports from canonical mapping records.
+Database: Relational database for structured mapping data, audit logs, regex corpus, and competency profiles; search index for fast concept retrieval. See Section 6.6 for data persistence requirements.
+Integration Layer (Phase 2): REST API endpoints and webhook support for OHN's EMR Data Cleansing Service and PARAT pipeline.
+
+8.3 Key Design Decisions
+AI is not trusted to map autonomously: AI suggestions and regex generation are inputs to human expert review, not outputs. Batch accept of AI suggestions is prohibited by design. This reflects the current state of AI/NLP reliability for clinical terminology mapping and the non-computability of lexical-to-semantic equivalence.
+Independence is enforced at the data layer: reviewer blinding is not a UI convention — it is enforced by data access control. No reviewer can access another's responses through any interface.
+No-blame automation: load rebalancing, dynamic reassignment, and quality flagging are all designed to be silent and non-punitive. The system acts; humans discuss.
+Corpus as competitive moat: the regex corpus grows with every validated project, creating a self-reinforcing quality asset that improves AI generation over time. Corpus governance is an open strategic question as OmniMap scales.
+
+9. Process Diagrams (BPMN)
+The following BPMN diagrams illustrate the OmniMap process flows across four swimlanes: Administrator, Reviewer, Adjudicator, and System/IT. Solid arrows represent sequence flows within a lane; dashed arrows represent message flows across lanes.
+
+9.1 High-Level Process Overview
+
+
+9.2 Phase 1: EMR Ingestion & Sampling
+
+
+9.3 Phase 2: Dual-Review Mapping & Adjudication
+
+
+9.4 Phase 3: Validation & Scoring
+
+
+9.5 Phase 4: Regex Pattern Library & Export
+
+
+10. Phased Roadmap
+
+Phase
+Scope
+Target
+Key Deliverables
+Phase 1 — MVP
+EMR ingestion & sampling (all strategies); Pareto + long tail management; net-new term queuing; prospective validation holdout with F1 power calculation; dual-review pool workflow; multi-nomenclature support (SNOMED CT, LOINC, ATC, CCDD, ICD-10/11, custom); regex library (generation, testing, over-greedy detection, JSON export); four-point validation scoring; automation evaluation module; reviewer training & certification; FHIR + CSV + JSON export; full audit logging.
+Q3 2026
+All Must Have requirements. Internal OHN use only.
+Phase 2 — Integration
+REST API; OHN pipeline integration (EMR Cleansing Service, PARAT); auto-learned throughput estimation; Snowstorm ECL query support; direct FHIR/DB EMR connections; additional terminology adapters on demand; terminology version validation project type.
+Q4 2026
+Programmatic access; webhook triggers for downstream pipeline.
+Phase 3 — Scale & UX
+Configurable export templates; advanced cross-project analytics dashboard; longitudinal automation benchmarking (version-over-version F1 trending); Pareto frequency distribution visualization curve; regex corpus multi-terminology extension.
+Q1–Q2 2027
+External client readiness.
+Phase 4 — Enterprise
+SSO/SAML integration; multi-tenancy; advanced RBAC; enhanced compliance reporting; regex corpus governance framework for commercial licensing.
+H2 2027
+Commercial licensing preparation.
+
+11. Out of Scope (v2.1)
+Real-time collaboration within a shared reviewer session (reviewers work independently by design).
+Direct EMR database or FHIR API connections for term ingestion (Phase 1: file upload only; Phase 2: direct connections).
+Batch accept of AI-generated suggestions (prohibited by design — see FR-38).
+Automated AI-only mapping without human reviewer confirmation.
+Patient-facing features of any kind.
+Mobile or offline-first interface.
+Pareto frequency distribution visualization curve (Phase 3; Phase 1: sorted list with cumulative frequency percentage).
+Terminology version validation project type (Phase 2).
+Regex corpus multi-terminology extension beyond SNOMED CT (Phase 3).
+
+12. Assumptions & Constraints
+OHN maintains appropriate licensing for each target terminology: SNOMED International NRC membership for SNOMED CT; LOINC attribution (no fee); Health Canada and WHO licensing for CCDD and ATC respectively.
+EMR term extracts uploaded for sampling contain occurrence frequency counts per term. Extracts without frequency data support random and stratified sampling only.
+All source data is governed by agency agreements between OHN and the data controller. OHN holds no data controller obligations and is not responsible for breach notification.
+Source terms are de-identified codes and display strings. OmniMap does not provide a de-identification step.
+The prospective holdout set is drawn and locked before any reviewer sees any term. Holdout size is determined by power calculation and cannot be reduced after locking.
+The adjudicator for a given project must not have served as a reviewer on that same project.
+For Automation Evaluation projects, reviewers labelling automated output must not be the individuals who developed or tuned the automation system being evaluated.
+Reviewer accounts are provisioned by OHN administrators. OmniMap does not provide self-registration.
+FHIR ConceptMap exports are intended for OHN's internal FHIR infrastructure; OmniMap does not operate a FHIR server.
+
+13. Success Metrics
+Adjudication rate <= 20% on OHN's internal CPCSSN validation dataset within 90 days of Phase 1 deployment. Adjudication rate is diagnostic — it signals reviewer training gaps or terminology difficulty, not quality failure.
+Auto-accept rate (identical SNOMED CT FSN matches) reported per project. Baseline to be established from first production project.
+Mean time to complete mapping of a 500-term source set reduced >= 30% compared to Snap2SNOMED baseline (controlled comparison).
+Validation F1 score >= 0.90 (one-sided, alpha = 0.05) on the prospective holdout set for OHN's first production mapping project.
+Automation Evaluation Module produces consistent F1 scores (variance < 0.02) across repeated runs on the same gold-standard dataset.
+Zero data-layer cross-role visibility incidents in penetration testing.
+FHIR ConceptMap exports validated as conformant by the HL7 FHIR validator on 100% of test exports.
+Reviewer interface usability: >= 90% task completion rate in usability testing with a cohort of 3 expert terminologists.
+At least 3 target terminology adapters (SNOMED CT, LOINC, and one of ATC/CCDD/ICD-10) validated in Phase 1 with correct concept retrieval on a reference test set.
+100% of reviewers assigned to live projects hold valid current certifications for their assigned terminology domains.
+
+14. Open Questions
+Terminology service hosting: Will OHN host a Snowstorm instance internally for SNOMED CT, or use an externally managed API? For other terminologies, what is the preferred hosting model for LOINC, CCDD, and ATC term sets? Decision affects Phase 1 infrastructure scope and cost.
+AI suggestion engine — embedding model selection: What embedding model will power the semantic similarity ranking agent? Decision required from CTO (Saqib Ahmad) before Phase 1 sprint planning.
+Regex generation agent — DAG topology: Should ECL Constraint Validation be a first-class node in the MVP DAG or a Phase 2 addition? How does the DAG adapt when the target terminology has no ECL support?
+Agency agreement template: Does OHN have a standard agency agreement template covering OmniMap's obligations as data processor? Legal review required.
+Adjudicator assignment governance: Is the Adjudicator a standing role within OHN or assigned per project? Role governance policy to be defined by CMO (Jonathan Marcus).
+Multi-tenancy: Phase 4 assumes multi-tenant architecture. Should the core data model be designed for multi-tenancy from Phase 1 to avoid costly refactoring?
+Regex corpus governance: As OmniMap scales to multi-terminology and potential commercial licensing, what is the IP governance model for the corpus? Internal proprietary only, or contribution to a broader terminology mapping commons?
+Certification expiry policy: What is the default recertification interval per terminology domain, and who holds authority to set institution-specific overrides?
+
+15. Document Control
+Version
+Description
+1.0 Draft
+Initial PRD — March 2026
+1.1 Draft
+TDP-structured AI engine (Sections 5.6, 7) — March 2026
+1.2 Draft
+Multi-nomenclature; Automation Evaluation Module; agency agreement privacy framing; research grounding — March 2026
+1.3 Draft
+EMR ingestion & sampling; prospective validation holdout; full FR renumbering — March 2026
+2.0 Draft
+Full rewrite: reviewer pool model; dynamic affinity-aware allocation; regex pattern library & corpus; four-point validation scoring; terminology version validation; reviewer training & certification; error correction; reviewer quality monitoring; productivity tools; long tail & net-new term management; multi-agent architecture; batch accept design rationale; one-sided F1 power analysis (alpha=0.05, threshold=0.90); clean FR-01 to FR-105 numbering — March 2026
+2.1 Draft
+Added Section 6.6 Data Persistence Requirements; Section 8 BPMN process diagrams (overview + 4 phase detail); sections renumbered to 14 total — March 2026
+2.2 Draft
+Added Section 5 OmniMap Runtime DAG; regex pipeline (4 layers); output convention; post-run reporting; corpus architecture; event-driven Lambda pattern — March 2026
+2.3 Draft
+Identical-match auto-accept (Node 4 branch, FR-106/107); replaced discrepancy/agreement rate with adjudication rate throughout; removed inter-reviewer concordance measurement; updated success metrics; Node 8 dual input paths documented — March 2026
+Next Review
+Prior to Phase 1 sprint kickoff
+Document Owner
+CEO, Omni Health Nexus Inc.
+Distribution
+OHN Executive Team, CTO, CMO, CCO, COO, Board Chair
+
+This document is confidential and proprietary to Omni Health Nexus Inc. Unauthorized reproduction or distribution is prohibited.
