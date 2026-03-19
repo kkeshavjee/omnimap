@@ -2,6 +2,11 @@
 .env
 *.env.local
 
+# Credentials (never commit)
+Credentials.txt
+credentials.txt
+*.credentials.txt
+
 # Node
 node_modules/
 dist/

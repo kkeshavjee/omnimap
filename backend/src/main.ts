@@ -8,7 +8,9 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 import express, { Request, Response, NextFunction } from 'express';
 import { authenticate }  from './middleware/auth';
-import projectsRouter    from './routes/projects';
+import projectsRouter       from './routes/projects';
+import reviewerRouter       from './routes/reviewer';
+import terminologiesRouter  from './routes/terminologies';
 
 const app  = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -26,7 +28,9 @@ app.use('/api', authenticate);
 // Routes
 // -----------------------------------------------------------------
 
-app.use('/api/projects', projectsRouter);
+app.use('/api/projects',       projectsRouter);
+app.use('/api/reviewer',      reviewerRouter);
+app.use('/api/terminologies', terminologiesRouter);
 
 // Health check (unauthenticated)
 app.get('/health', (_req: Request, res: Response) => {
