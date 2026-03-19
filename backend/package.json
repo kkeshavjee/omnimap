@@ -9,7 +9,9 @@
     "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
     "start": "node dist/main.js",
     "lint": "eslint 'src/**/*.ts'",
-    "db:migrate": "node -r ts-node/register scripts/migrate.ts"
+    "db:migrate": "node -r ts-node/register scripts/migrate.ts",
+    "test": "jest",
+    "test:coverage": "jest --coverage"
   },
   "dependencies": {
     "aws-jwt-verify": "^4.0.1",
@@ -19,9 +21,12 @@
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.11.5",
     "@types/pg": "^8.11.0",
     "@types/uuid": "^9.0.7",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3"
