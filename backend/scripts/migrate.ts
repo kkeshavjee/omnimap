@@ -10,6 +10,9 @@
 import * as fs   from 'fs';
 import * as path from 'path';
 import { Pool }  from 'pg';
+import * as dotenv from 'dotenv';
+
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
