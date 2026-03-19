@@ -6,12 +6,14 @@
 import { Request, Response, NextFunction } from 'express';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { UserRole } from '../types';
+import { db } from '../services/db';
 
 // Extend Express Request with verified user context
 declare global {
   namespace Express {
     interface Request {
       user?: {
+        id:         string;   // users.id (UUID from DB)
         cognitoSub: string;
         email:      string;
         role:       UserRole;
@@ -58,7 +60,18 @@ export async function authenticate(
       return;
     }
 
+    // Look up DB user id from cognitoSub
+    const { rows } = await db.query<{ id: string }>(
+      `SELECT id FROM users WHERE cognito_sub = $1 AND is_active = TRUE LIMIT 1`,
+      [payload.sub],
+    );
+    if (rows.length === 0) {
+      res.status(401).json({ error: 'User not found or inactive' });
+      return;
+    }
+
     req.user = {
+      id:         rows[0].id,
       cognitoSub: payload.sub,
       email:      payload.email as string,
       role,

@@ -4,7 +4,7 @@ import { UserRole } from '../../types';
 
 function makeReq(role?: UserRole): Partial<Request> {
   return role
-    ? { user: { cognitoSub: 'sub-123', email: 'a@b.com', role, mfaEnabled: true } }
+    ? { user: { id: 'user-uuid-123', cognitoSub: 'sub-123', email: 'a@b.com', role, mfaEnabled: true } }
     : {};
 }
 
