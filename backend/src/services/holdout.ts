@@ -23,11 +23,13 @@
 //
 // Triggers: Node 5 ALLOCATE (non-matched terms) + Node 8 CANONICALISE (auto-matched)
 
-import { v4 as uuidv4 }  from 'uuid';
-import { db }            from './db';
-import { emit }          from './events';
-import { AuditAction }   from '../middleware/auditLog';
-import { TermStatus }    from '../types/enums';
+import { v4 as uuidv4 }       from 'uuid';
+import { db }                from './db';
+import { emit }              from './events';
+import { AuditAction }       from '../middleware/auditLog';
+import { TermStatus }        from '../types/enums';
+import { canonicalMatchForm } from './clinicalNlp';
+import { isInfowayConfigured, findExactTerm } from './infowayFhir';
 
 // -----------------------------------------------------------------
 // Power calculation
@@ -67,15 +69,6 @@ export function computeHoldoutN(params: {
   return Math.ceil(nRaw);
 }
 
-// -----------------------------------------------------------------
-// Canonical form for AUTOMATCH
-// -----------------------------------------------------------------
-
-const PUNCT_RE = /[^\w\s]/g;
-
-function canonicalForm(s: string): string {
-  return s.toUpperCase().replace(PUNCT_RE, '').replace(/\s+/g, ' ').trim();
-}
 
 // -----------------------------------------------------------------
 // Public types
@@ -123,7 +116,11 @@ export async function holdoutDrawAndAutomatch(
       [projectId],
     );
     if (projRows.length === 0) throw new Error(`Project ${projectId} not found`);
-    const { f0, alpha, beta, targetTerminologyId } = projRows[0];
+    // Parse as numbers — node-postgres returns NUMERIC columns as strings
+    const f0    = parseFloat(projRows[0].f0 as unknown as string);
+    const alpha = parseFloat(projRows[0].alpha as unknown as string);
+    const beta  = parseFloat(projRows[0].beta as unknown as string);
+    const { targetTerminologyId } = projRows[0];
 
     // Compute required holdout n
     const holdoutN = computeHoldoutN({ f0, alpha, beta });
@@ -230,10 +227,14 @@ export async function holdoutDrawAndAutomatch(
     const { rows: mappingPool } = await client.query<{
       projectTermId: string;
       sourceCode:    string;
+      displayTerm:   string;
+      matchForm:     string;
     }>(
       `SELECT
-         pt.id           AS "projectTermId",
-         st.source_code  AS "sourceCode"
+         pt.id                    AS "projectTermId",
+         st.source_code           AS "sourceCode",
+         st.display_term          AS "displayTerm",
+         COALESCE(st.display_term_match, st.display_term) AS "matchForm"
        FROM project_terms pt
        JOIN source_terms  st ON st.id = pt.source_term_id
        WHERE pt.project_id = $1
@@ -256,22 +257,59 @@ export async function holdoutDrawAndAutomatch(
       let matched = false;
 
       if (isSnomedProject) {
-        // Check against canonical_mappings FSN (target_display is the FSN)
-        const sourceCanonical = canonicalForm(term.sourceCode);
+        const sourceCanonical = term.matchForm;  // pre-computed at ingest by clinicalNlp.annotate()
 
+        if (isInfowayConfigured()) {
+          // ── Infoway FHIR: live SNOMED CT CA FSN exact match ──
+          try {
+            const hit = await findExactTerm(term.displayTerm);
+            if (hit) {
+              matched = true;
+              // Store SNOMED code in auto_matched_fsn for use by canonicalise
+              await client.query(
+                `UPDATE project_terms
+                 SET status = 'auto_matched',
+                     is_auto_matched = TRUE,
+                     auto_matched_at = now(),
+                     auto_matched_fsn = $1,
+                     updated_at = now()
+                 WHERE id = $2`,
+                [hit.code, term.projectTermId],
+              );
+              await client.query(
+                `INSERT INTO audit_log
+                   (user_id, system_flag, action, entity_type, entity_id, project_id, payload)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [
+                  null, 'AUTO_MATCH',
+                  AuditAction.TERM_AUTO_MATCHED,
+                  'project_term', term.projectTermId, projectId,
+                  JSON.stringify({ sourceCode: term.sourceCode, snomedCode: hit.code, source: 'infoway' }),
+                ],
+              );
+              autoMatched++;
+              continue;
+            }
+          } catch (err) {
+            console.warn('[automatch] Infoway lookup failed for term:', term.displayTerm, (err as Error).message);
+            // Fall through to corpus match
+          }
+        }
+
+        // ── Corpus fallback: match against canonical_mappings ──
         const { rows: fsnRows } = await client.query<{ targetDisplay: string }>(
-          `SELECT cm.target_display AS "targetDisplay"
+          `SELECT cm.target_display_lower AS "targetDisplay"
            FROM   canonical_mappings cm
            JOIN   project_terms pt2 ON pt2.id = cm.project_term_id
            JOIN   projects p        ON p.id   = pt2.project_id
            WHERE  p.target_terminology_id = $1
              AND  cm.is_current = TRUE
-           LIMIT 500`,   // AUTOMATCH checks against corpus FSNs
+           LIMIT 500`,
           [targetTerminologyId],
         );
 
         for (const fsn of fsnRows) {
-          if (canonicalForm(fsn.targetDisplay) === sourceCanonical) {
+          if (canonicalMatchForm(fsn.targetDisplay) === sourceCanonical) {
             matched = true;
             break;
           }

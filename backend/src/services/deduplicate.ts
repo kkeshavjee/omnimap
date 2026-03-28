@@ -37,7 +37,7 @@ export interface DeduplicateResult {
 }
 
 // -----------------------------------------------------------------
-// Service
+// Service — set-based classification (single round-trip per phase)
 // -----------------------------------------------------------------
 
 export async function deduplicateTerms(input: DeduplicateInput): Promise<DeduplicateResult> {
@@ -55,119 +55,135 @@ export async function deduplicateTerms(input: DeduplicateInput): Promise<Dedupli
     if (projRows.length === 0) throw new Error(`Project ${projectId} not found`);
     const { targetTerminologyId } = projRows[0];
 
-    // Fetch all raw source terms for this extract that don't already have a project_term
-    const { rows: rawTerms } = await client.query<{
-      id: string;
-      sourceCode: string;
-      displayTerm: string;
-      frequency: number | null;
-      clinicalDomain: string | null;
+    // ---------------------------------------------------------------
+    // Single CTE to classify all raw terms at once:
+    //   in_canon   → matched in canonical_mappings (same target terminology, is_current)
+    //   in_external → matched in external_mapping_imports for this project
+    //   is_net_new  → source_code never appeared in any *prior* extract for this project
+    // ---------------------------------------------------------------
+    const { rows: classified } = await client.query<{
+      id:                  string;
+      sourceCode:          string;
+      displayTerm:         string;
+      frequency:           number | null;
+      clinicalDomain:      string | null;
       sourceTerminologyId: string | null;
+      inCanon:             boolean;
+      inExternal:          boolean;
+      isNetNew:            boolean;
+      mappedByProjectId:   string | null;
     }>(
-      `SELECT
-         st.id                      AS id,
-         st.source_code             AS "sourceCode",
-         st.display_term            AS "displayTerm",
-         st.frequency               AS frequency,
-         st.clinical_domain         AS "clinicalDomain",
-         st.source_terminology_id   AS "sourceTerminologyId"
-       FROM source_terms st
-       LEFT JOIN project_terms pt
-         ON pt.source_term_id = st.id AND pt.project_id = $1
-       WHERE st.extract_id = $2
-         AND st.is_out_of_place = FALSE
-         AND pt.id IS NULL`,
-      [projectId, extractId],
+      `WITH raw_terms AS (
+         SELECT
+           st.id, st.source_code, st.display_term, st.frequency,
+           st.clinical_domain, st.source_terminology_id
+         FROM source_terms st
+         LEFT JOIN project_terms pt
+           ON pt.source_term_id = st.id AND pt.project_id = $1
+         WHERE st.extract_id    = $2
+           AND st.is_out_of_place = FALSE
+           AND pt.id IS NULL
+       ),
+       canon_hit AS (
+         -- One row per unique source_code that matches the canonical corpus
+         SELECT DISTINCT ON (UPPER(TRIM(st2.source_code)))
+           UPPER(TRIM(st2.source_code)) AS sc_upper,
+           pt2.project_id               AS mapped_by_project_id
+         FROM   canonical_mappings cm
+         JOIN   project_terms  pt2 ON pt2.id  = cm.project_term_id
+         JOIN   projects        p   ON p.id   = pt2.project_id
+         JOIN   source_terms   st2  ON st2.id = pt2.source_term_id
+         WHERE  p.target_terminology_id = $3
+           AND  cm.is_current = TRUE
+         ORDER BY UPPER(TRIM(st2.source_code))
+       ),
+       ext_hit AS (
+         SELECT DISTINCT UPPER(TRIM(source_code)) AS sc_upper
+         FROM   external_mapping_imports
+         WHERE  project_id = $1
+       ),
+       prior_hit AS (
+         -- source_codes that have appeared in at least one *other* extract for this project
+         SELECT DISTINCT UPPER(TRIM(st2.source_code)) AS sc_upper
+         FROM   source_terms   st2
+         JOIN   emr_extracts   ex  ON ex.id = st2.extract_id
+         WHERE  ex.project_id = $1
+           AND  st2.extract_id != $2
+       )
+       SELECT
+         rt.id,
+         rt.source_code            AS "sourceCode",
+         rt.display_term           AS "displayTerm",
+         rt.frequency,
+         rt.clinical_domain        AS "clinicalDomain",
+         rt.source_terminology_id  AS "sourceTerminologyId",
+         (ch.sc_upper IS NOT NULL) AS "inCanon",
+         (eh.sc_upper IS NOT NULL) AS "inExternal",
+         (ph.sc_upper IS NULL)     AS "isNetNew",
+         ch.mapped_by_project_id   AS "mappedByProjectId"
+       FROM      raw_terms rt
+       LEFT JOIN canon_hit ch ON ch.sc_upper = UPPER(TRIM(rt.source_code))
+       LEFT JOIN ext_hit   eh ON eh.sc_upper = UPPER(TRIM(rt.source_code))
+       LEFT JOIN prior_hit ph ON ph.sc_upper = UPPER(TRIM(rt.source_code))`,
+      [projectId, extractId, targetTerminologyId],
     );
 
+    // ---------------------------------------------------------------
+    // Classify and build arrays for bulk insert
+    // ---------------------------------------------------------------
     let alreadyMapped     = 0;
     let netNewQueued      = 0;
     let forwardedToSample = 0;
 
-    for (const term of rawTerms) {
-      // ── (a) Check OmniMap canonical corpus ─────────────────────────────
-      const { rows: canonRows } = await client.query<{ id: string }>(
-        `SELECT cm.id
-         FROM   canonical_mappings cm
-         JOIN   project_terms pt2 ON pt2.id = cm.project_term_id
-         JOIN   projects p        ON p.id   = pt2.project_id
-         JOIN   source_terms st   ON st.id  = pt2.source_term_id
-         WHERE  p.target_terminology_id = $1
-           AND  UPPER(TRIM(st.source_code)) = UPPER(TRIM($2))
-           AND  cm.is_current = TRUE
-         LIMIT 1`,
-        [targetTerminologyId, term.sourceCode],
-      );
+    const ids:                    string[]        = [];
+    const sourceTermIds:          string[]        = [];
+    const statuses:               string[]        = [];
+    const alreadyMappedByProjIds: (string|null)[] = [];
 
-      // ── (b) Check external reference corpus ────────────────────────────
-      const { rows: extRows } = await client.query<{ id: string }>(
-        `SELECT id
-         FROM   external_mapping_imports
-         WHERE  project_id = $1
-           AND  UPPER(TRIM(source_code)) = UPPER(TRIM($2))
-         LIMIT 1`,
-        [projectId, term.sourceCode],
-      );
-
-      const inCorpus   = canonRows.length > 0;
-      const inExternal = extRows.length > 0;
-
-      // ── (c) Net-new detection ───────────────────────────────────────────
-      // A term is net-new when its source_code has NEVER appeared in any prior
-      // extract for this project (i.e., only exists in the current extract).
-      let isNetNew = false;
-      if (!inCorpus && !inExternal) {
-        const { rows: priorRows } = await client.query<{ cnt: string }>(
-          `SELECT COUNT(*)::TEXT AS cnt
-           FROM   source_terms st
-           JOIN   emr_extracts  ex ON ex.id = st.extract_id
-           WHERE  ex.project_id = $1
-             AND  st.id         != $2
-             AND  UPPER(TRIM(st.source_code)) = UPPER(TRIM($3))`,
-          [projectId, term.id, term.sourceCode],
-        );
-        isNetNew = parseInt(priorRows[0].cnt, 10) === 0;
-      }
-
-      // ── Classify and create project_term ───────────────────────────────
+    for (const term of classified) {
       let status: TermStatus;
-      let alreadyMappedByProjectId: string | null = null;
+      let mappedByProjectId: string | null = null;
 
-      if (inCorpus) {
+      if (term.inCanon) {
+        status           = TermStatus.AlreadyMapped;
+        mappedByProjectId = term.mappedByProjectId;
+        alreadyMapped++;
+      } else if (term.inExternal) {
         status = TermStatus.AlreadyMapped;
-        // Record which project originally mapped this term
-        const { rows: srcProjRows } = await client.query<{ projectId: string }>(
-          `SELECT pt2.project_id AS "projectId"
-           FROM   canonical_mappings cm
-           JOIN   project_terms pt2 ON pt2.id = cm.project_term_id
-           JOIN   source_terms  st  ON st.id  = pt2.source_term_id
-           JOIN   projects p        ON p.id   = pt2.project_id
-           WHERE  p.target_terminology_id = $1
-             AND  UPPER(TRIM(st.source_code)) = UPPER(TRIM($2))
-             AND  cm.is_current = TRUE
-           LIMIT 1`,
-          [targetTerminologyId, term.sourceCode],
-        );
-        alreadyMappedByProjectId = srcProjRows[0]?.projectId ?? null;
         alreadyMapped++;
-      } else if (inExternal) {
-        status = TermStatus.AlreadyMapped;  // external reference — treat as mapped for dedup
-        alreadyMapped++;
-      } else if (isNetNew) {
+      } else if (term.isNetNew) {
         status = TermStatus.NetNewQueued;
         netNewQueued++;
       } else {
-        status = TermStatus.Raw;  // existing term, not in corpus → forward to Sample
+        status = TermStatus.Raw;
         forwardedToSample++;
       }
 
+      ids.push(uuidv4());
+      sourceTermIds.push(term.id);
+      statuses.push(status);
+      alreadyMappedByProjIds.push(mappedByProjectId);
+    }
+
+    // ---------------------------------------------------------------
+    // Bulk insert project_terms — single round-trip
+    // ---------------------------------------------------------------
+    if (ids.length > 0) {
       await client.query(
         `INSERT INTO project_terms (
-          id, project_id, source_term_id, status,
-          is_holdout, holdout_locked, is_auto_matched,
-          already_mapped_by_project_id
-        ) VALUES ($1, $2, $3, $4, FALSE, FALSE, FALSE, $5)`,
-        [uuidv4(), projectId, term.id, status, alreadyMappedByProjectId],
+           id, project_id, source_term_id, status,
+           is_holdout, holdout_locked, is_auto_matched,
+           already_mapped_by_project_id
+         )
+         SELECT
+           unnest($1::uuid[]),
+           $2::uuid,
+           unnest($3::uuid[]),
+           unnest($4::text[])::term_status,
+           FALSE, FALSE, FALSE,
+           unnest($5::uuid[])
+         ON CONFLICT DO NOTHING`,
+        [ids, projectId, sourceTermIds, statuses, alreadyMappedByProjIds],
       );
     }
 

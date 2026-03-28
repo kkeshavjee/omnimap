@@ -11,6 +11,11 @@ import { authenticate }  from './middleware/auth';
 import projectsRouter       from './routes/projects';
 import reviewerRouter       from './routes/reviewer';
 import terminologiesRouter  from './routes/terminologies';
+import adjudicatorRouter       from './routes/adjudicator';
+import auditRouter             from './routes/audit';
+import searchRouter            from './routes/search';
+import qualifierPatternsRouter from './routes/qualifierPatterns';
+import usersRouter             from './routes/users';
 
 const app  = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -31,6 +36,11 @@ app.use('/api', authenticate);
 app.use('/api/projects',       projectsRouter);
 app.use('/api/reviewer',      reviewerRouter);
 app.use('/api/terminologies', terminologiesRouter);
+app.use('/api/adjudicator',   adjudicatorRouter);
+app.use('/api/audit',               auditRouter);
+app.use('/api/search',              searchRouter);
+app.use('/api/qualifier-patterns',  qualifierPatternsRouter);
+app.use('/api/users',               usersRouter);
 
 // Health check (unauthenticated)
 app.get('/health', (_req: Request, res: Response) => {

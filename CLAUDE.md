@@ -1,5 +1,52 @@
 # OmniMap — Claude Code Orientation
 
+---
+
+## 🔖 NEXT SESSION — Pick up here (last updated 2026-03-20)
+
+### Immediate actions (in order)
+1. **Create a feature branch** — `git checkout -b feature/end-to-end-test` before touching any code
+2. **Invite 2 reviewer accounts** via Admin → Users → Invite User (role: Reviewer)
+3. **Karim creates his own adjudicator account** via Admin → Users → Invite User (role: Adjudicator)
+4. **Run the full pipeline end-to-end** with a real or synthetic dataset:
+   - Node 1 Ingest → Node 2 Deduplicate → Node 3 Sample → Node 4 Holdout/Automatch → Node 5 Allocate
+   - Both reviewers log in and map their assigned terms (including at least one SNOMED gap)
+   - Disagreement terms route to adjudication queue
+   - Karim adjudicates as Adjudicator
+   - Node 8 Canonicalise → Node 13 Export + Gap Report
+5. **Fix the pre-existing TypeScript warning** in `frontend/src/features/admin/UsersPage.tsx` line 174 (`action` declared but never read) — minor cleanup
+
+### Waiting on
+- ✅ **Infoway FHIR credentials received 2026-03-28** — added to `backend/.env`. Backend restarted. Live SNOMED CT Canadian Edition search + automatch active.
+
+### Known gaps to address (post-testing)
+- Forgot password link on login page (not yet implemented)
+- FR-113 deduplication surfacing of known gaps (Phase 2)
+- Production deployment to EC2 (replace Supabase with Aurora Serverless v2, Nginx + Certbot, PM2)
+
+### 🤔 Design decision pending — Automatch confidence tiering
+**Context:** Stop words `\bdue\b`, `\bcaused\b`, `\bNOS\b` are still in the stop word list and are applied
+during automatch. A term like "Anemia due to blood loss" stripped to "Anemia blood loss" could
+false-positive match to the generic "Anemia" SNOMED concept.
+
+**Decision needed:** Should automatch be tiered by confidence?
+- **Option A (recommended):** Track whether moderate-risk stop words were applied during matching.
+  - Zero stop words stripped → auto-accept (Node 8, as now)
+  - Moderate-risk words stripped → route to adjudicator "quick confirm" queue instead
+- **Option B:** All auto-matches go to adjudicator bulk-confirm screen before canonicalising
+- **Option C:** Leave as-is; rely on holdout F1 scoring to expose systematic errors post-testing
+
+**Current state:** Option C (do nothing for now). Revisit after first end-to-end test run with
+real data — the holdout score will show whether the moderate-risk strips are causing wrong matches.
+
+Implementation of Option A requires:
+1. `holdout.ts` — track `matchRequiredStripOf: string[]` during the match loop
+2. If list non-empty → set `status = 'automatch_review'` instead of `'auto_matched'`
+3. New adjudicator endpoint + UI for bulk confirm/reject of `automatch_review` terms
+4. `project_terms` table may need `automatch_confidence` column (migration 006)
+
+---
+
 ## What This Project Is
 OmniMap is a clinical terminology mapping platform built by Omni Health Nexus Inc. (OHN).
 It maps source EMR terms to target terminologies (SNOMED CT, LOINC, ATC, CCDD, ICD-10/11)
@@ -221,3 +268,108 @@ MFA required for Administrator and Adjudicator.
 - Terminology version validation project type (Phase 2)
 - Pareto frequency curve visualization (Phase 3)
 - Multi-tenancy (Phase 4)
+
+---
+
+## Infrastructure Decisions Made
+
+| Concern | Decision | Reason |
+|---|---|---|
+| Hosting | **EC2 `t3.small`** (not Lambda) | Express isn't Lambda-native; PostgreSQL connection limits break at Lambda concurrency; cold starts noticeable for clinical users; seed/migration scripts need persistent env |
+| Dev database | **Supabase** | Fast setup; connection string `aws-1-us-east-1.pooler.supabase.com` |
+| Prod database | Aurora Serverless v2 | As specified in PRD |
+| Auth | AWS Cognito User Pool `ca-central-1_Mk1k0NG0s` | Configured March 2026 |
+| Cognito App Client | `3tkq5r2i0p4rl8ac89a4nlrfc6` (public, no secret) | Browser-based Amplify requires public client |
+
+---
+
+## Implementation Status (March 2026)
+
+### Completed
+- **Phase A** — Migrations 001–004, TypeScript types, auth + RBAC middleware
+- **Auth flow** — Login, forgot-password (2-step Cognito reset), new-password-required challenge on first login
+- **Admin UI** — Projects page, Project detail, Users management (invite/list/edit/deactivate), Regex Library page
+- **Favicon** — `frontend/public/icon.png` (Omni Health Nexus logo)
+- **Seed data** — 399 qualifier patterns loaded (negation×77, stop_word×44, location×225, timing×14, family_history×18, causation×7, screening×14)
+- **DAG Nodes 1–3** — Ingest, Deduplicate, Sample all working end-to-end
+
+### Pending (next up)
+- EC2 deployment (Nginx + PM2 + Certbot)
+- Phase B: Nodes 0–5 (ingest through allocation) — Nodes 1–3 working; Node 4 holdout+automatch next
+- Phase C: Reviewer workspace (Node 6 MAP)
+
+---
+
+## Migrations Status
+
+| File | Applied to Supabase? |
+|---|---|
+| `001_initial_schema.sql` | ✅ Yes |
+| `002_source_term_nlp.sql` | ✅ Yes |
+| `003_qualifier_patterns.sql` | ✅ Yes |
+| `004_screening.sql` | ✅ Yes |
+| `004_screening_exclusion.sql` | No-op (superseded by 004_screening.sql) |
+| `005_snomed_gap.sql` | ✅ Yes |
+
+---
+
+## Key Gotchas & Learnings
+
+### AWS Cognito
+- **App Client must have no secret** for browser-based Amplify. You cannot remove a secret from an existing client — create a new one. Public client = no secret.
+- **Custom attribute casing is permanent.** Creating `custom:Role` (capital R) makes that the JWT claim name forever. You cannot rename or delete Cognito custom attributes.
+- **Both `.env` files must use the same App Client ID.** The backend's `CognitoJwtVerifier` checks the `client_id` claim in every JWT against `COGNITO_CLIENT_ID`.
+- **First login after `AdminCreateUser`** returns `CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED` from Amplify's `signIn`. Handle with `confirmSignIn({ challengeResponse: newPassword })` before calling `resolveUser`.
+- **Amplify v6 `signIn` always returns `{ isSignedIn, nextStep }`** — never assume sign-in completes in one step. Check `nextStep.signInStep`.
+- **`requireRole` is in `../middleware/rbac`**, not `../middleware/auth`.
+
+### Environment Variables — Restart Rules
+- **`ts-node-dev` does NOT re-read `.env`** on file save. Any `.env` change requires full backend process kill + restart.
+- **Vite only reads `.env` at dev server start.** Restart Vite after any `.env` change.
+- **Auth bypass security model:** `AUTH_BYPASS=true` in `backend/.env` is the real security gate. `VITE_AUTH_BYPASS=true` in `frontend/.env` only controls the UI redirect — the backend still enforces real JWTs regardless.
+
+### Database
+- **Filter dev sentinel from production queries:** `WHERE cognito_sub != 'dev-bypass-sub'`
+- **Never edit existing migration files.** Add new numbered SQL files only.
+- **`display_term_match`** and other NLP columns come from migration 002, not 001. If the column is missing, migration 002 hasn't been run yet.
+
+### IAM vs App Client
+- **`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`** are IAM credentials for admin Cognito API calls (`AdminCreateUser`, `AdminDisableUser`, etc.). Required in `backend/.env`. Not related to the App Client.
+- On EC2 production: replace IAM key pair with an **IAM Instance Role** — no credentials needed in the environment at all.
+
+---
+
+## Git Branching Workflow
+
+**All development happens on feature branches — never directly on `main`.**
+
+### Branch naming
+```
+feature/<short-description>    # new features
+fix/<short-description>        # bug fixes
+chore/<short-description>      # tooling, deps, docs
+```
+
+### Workflow per task
+1. `git checkout -b feature/<name>` from latest `main`
+2. Implement and commit on the branch
+3. Open a PR → review → merge to `main`
+4. Delete the branch after merge
+
+### Rules
+- `main` is always deployable. Never push broken code to `main`.
+- Claude Code works on the **current branch** — confirm branch before starting work if unclear.
+- Migration files must be merged to `main` before applying them to Supabase/prod DB.
+- `.env` files are never committed on any branch.
+
+---
+
+## Infoway FHIR Terminology Server
+
+- **Base URL:** `https://terminologystandardsservice.ca/fhir`
+- **Auth:** OAuth 2.0 client credentials (`INFOWAY_CLIENT_ID` + `INFOWAY_CLIENT_SECRET`)
+- **Token URL:** `https://terminologystandardsservice.ca/authorisation/auth/realms/terminology/protocol/openid-connect/token`
+- **Register:** https://infocentral.infoway-inforoute.ca/en/system-access-request-form
+- **Client:** `backend/src/services/infowayFhir.ts` — token cached until near-expiry
+- **Fallback:** If `INFOWAY_CLIENT_ID` is blank, search falls back to corpus (`canonical_mappings`). No errors thrown.
+- Separate Dev/Prod credentials. Set in `backend/.env` per environment.

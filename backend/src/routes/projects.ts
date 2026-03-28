@@ -12,6 +12,7 @@ import { deduplicateTerms }                          from '../services/deduplica
 import { sampleTerms }                               from '../services/sample';
 import { holdoutDrawAndAutomatch }                   from '../services/holdout';
 import { allocateTerms_service }                     from '../services/allocate';
+import { canonicaliseTerms }                         from '../services/canonicalise';
 import { requireRole }                               from '../middleware/rbac';
 import { UserRole, ProjectType, SamplingStrategy }  from '../types/enums';
 
@@ -48,11 +49,11 @@ router.post(
 );
 
 // -----------------------------------------------------------------
-// GET /projects  — list projects (admin/auditor)
+// GET /projects  — list projects (admin/auditor/reviewer/adjudicator)
 // -----------------------------------------------------------------
 router.get(
   '/',
-  requireRole(UserRole.Administrator, UserRole.Auditor),
+  requireRole(UserRole.Administrator, UserRole.Auditor, UserRole.Reviewer, UserRole.Adjudicator),
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const { rows } = await db.query(
@@ -255,6 +256,138 @@ router.post(
         triggeredBy: req.user!.id,
       });
       res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------
+// POST /projects/:id/canonicalise  — Node 8
+// -----------------------------------------------------------------
+router.post(
+  '/:id/canonicalise',
+  requireRole(UserRole.Administrator),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await canonicaliseTerms({
+        projectId:   req.params.id,
+        triggeredBy: req.user!.id,
+      });
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------
+// GET /projects/:id/export  — Node 13
+// Returns all canonical_mappings as JSON (inline) and records the export.
+// Query param: format=json (default) | csv
+// -----------------------------------------------------------------
+router.get(
+  '/:id/export',
+  requireRole(UserRole.Administrator, UserRole.Auditor),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const projectId = req.params.id;
+      const format    = (req.query.format as string) ?? 'json';
+
+      const { rows } = await db.query(
+        `SELECT
+           st.source_code           AS "sourceCode",
+           st.display_term          AS "displayTerm",
+           st.frequency,
+           cm.target_code           AS "targetCode",
+           cm.target_display_lower  AS "targetDisplay",
+           cm.relationship_type     AS "relationshipType",
+           cm.is_auto_matched       AS "isAutoMatched",
+           cm.auto_match_basis      AS "autoMatchBasis",
+           cm.created_at            AS "canonicalisedAt"
+         FROM canonical_mappings cm
+         JOIN project_terms  pt ON pt.id = cm.project_term_id
+         JOIN source_terms   st ON st.id = cm.source_term_id
+         WHERE cm.project_id  = $1
+           AND cm.is_current  = TRUE
+         ORDER BY st.frequency DESC NULLS LAST, st.display_term`,
+        [projectId],
+      );
+
+      // Record the export (no S3 — inline response)
+      await db.query(
+        `INSERT INTO exports (id, project_id, format, exported_by, includes_superseded)
+         VALUES ($1, $2, $3::export_format, $4, FALSE)`,
+        [uuidv4(), projectId, format === 'csv' ? 'csv' : 'json', req.user!.id],
+      );
+
+      if (format === 'csv') {
+        const headers = ['sourceCode','displayTerm','frequency','targetCode','targetDisplay','relationshipType','isAutoMatched','canonicalisedAt'];
+        const lines   = [headers.join(',')];
+        for (const r of rows) {
+          lines.push(headers.map(h => {
+            const v = r[h as keyof typeof r];
+            return v == null ? '' : `"${String(v).replace(/"/g, '""')}"`;
+          }).join(','));
+        }
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="omnimap-export-${projectId}.csv"`);
+        return res.send(lines.join('\n'));
+      }
+
+      res.json({ projectId, exportedAt: new Date().toISOString(), rows });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------
+// GET /projects/:id/gap-report  — SNOMED Gap Report (FR-114)
+// Returns all canonical_mappings flagged as SNOMED gaps.
+// Query param: format=json (default) | csv
+// -----------------------------------------------------------------
+router.get(
+  '/:id/gap-report',
+  requireRole(UserRole.Administrator, UserRole.Auditor),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const projectId = req.params.id;
+      const format    = (req.query.format as string) ?? 'json';
+
+      const { rows } = await db.query(
+        `SELECT
+           st.source_code           AS "sourceCode",
+           st.display_term          AS "displayTerm",
+           st.frequency,
+           st.clinical_domain       AS "clinicalDomain",
+           cm.gap_reason_code       AS "gapReasonCode",
+           cm.created_at            AS "confirmedDate"
+         FROM canonical_mappings cm
+         JOIN project_terms  pt ON pt.id = cm.project_term_id
+         JOIN source_terms   st ON st.id = cm.source_term_id
+         WHERE cm.project_id   = $1
+           AND cm.is_snomed_gap = TRUE
+           AND cm.is_current    = TRUE
+         ORDER BY st.frequency DESC NULLS LAST, st.display_term`,
+        [projectId],
+      );
+
+      if (format === 'csv') {
+        const headers = ['sourceCode','displayTerm','frequency','clinicalDomain','gapReasonCode','confirmedDate'];
+        const lines   = [headers.join(',')];
+        for (const r of rows) {
+          lines.push(headers.map(h => {
+            const v = r[h as keyof typeof r];
+            return v == null ? '' : `"${String(v).replace(/"/g, '""')}"`;
+          }).join(','));
+        }
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="omnimap-gap-report-${projectId}.csv"`);
+        return res.send(lines.join('\n'));
+      }
+
+      res.json({ projectId, exportedAt: new Date().toISOString(), total: rows.length, rows });
     } catch (err) {
       next(err);
     }

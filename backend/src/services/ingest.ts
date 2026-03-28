@@ -19,6 +19,7 @@ import { db }                  from './db';
 import { emit }                from './events';
 import { AuditAction }         from '../middleware/auditLog';
 import { ProjectStatus }       from '../types/enums';
+import { annotate }            from './clinicalNlp';
 
 // -----------------------------------------------------------------
 // Column name aliases (all lower-case for normalisation)
@@ -26,26 +27,77 @@ import { ProjectStatus }       from '../types/enums';
 
 const ALIAS: Record<string, string> = {
   // source_code
-  source_code:  'source_code',
-  'source code': 'source_code',
-  sourcecode:   'source_code',
-  code:         'source_code',
+  source_code:        'source_code',
+  'source code':      'source_code',
+  sourcecode:         'source_code',
+  code:               'source_code',
+  'local code':       'source_code',
+  local_code:         'source_code',
+  'concept code':     'source_code',
+  concept_code:       'source_code',
+  'concept id':       'source_code',
+  concept_id:         'source_code',
+  id:                 'source_code',
+  no:                 'source_code',
+  'no.':              'source_code',
+  num:                'source_code',
+  number:             'source_code',
+  '#':                'source_code',
+  row:                'source_code',
+  'original text':    'display_term',
+  original_text:      'display_term',
+  'original term':    'display_term',
+  original_term:      'display_term',
+  text:               'display_term',
+  'raw text':         'display_term',
+  raw_text:           'display_term',
+  'snomed code':      'source_code',
+  'snomed id':        'source_code',
+  'loinc code':       'source_code',
   // display_term
-  display_term: 'display_term',
-  'display term': 'display_term',
-  displayterm:  'display_term',
-  term:         'display_term',
-  description:  'display_term',
+  display_term:       'display_term',
+  'display term':     'display_term',
+  displayterm:        'display_term',
+  term:               'display_term',
+  description:        'display_term',
+  diagnosis:          'display_term',
+  'diagnosis text':   'display_term',
+  procedure:          'display_term',
+  'procedure text':   'display_term',
+  finding:            'display_term',
+  label:              'display_term',
+  name:               'display_term',
+  'preferred term':   'display_term',
+  preferred_term:     'display_term',
+  'fully specified name': 'display_term',
+  fsn:                'display_term',
+  'concept name':     'display_term',
+  concept_name:       'display_term',
+  'display name':     'display_term',
+  display_name:       'display_term',
   // frequency
-  frequency:    'frequency',
-  freq:         'frequency',
-  count:        'frequency',
-  cnt:          'frequency',
+  frequency:          'frequency',
+  freq:               'frequency',
+  count:              'frequency',
+  cnt:                'frequency',
+  usage:              'frequency',
+  occurrences:        'frequency',
+  encounters:         'frequency',
+  patients:           'frequency',
+  'patient count':    'frequency',
+  patient_count:      'frequency',
+  'record count':     'frequency',
+  record_count:       'frequency',
+  total:              'frequency',
+  n:                  'frequency',
   // optional
   clinical_domain:        'clinical_domain',
   'clinical domain':      'clinical_domain',
   clinicaldomain:         'clinical_domain',
   domain:                 'clinical_domain',
+  specialty:              'clinical_domain',
+  department:             'clinical_domain',
+  category:               'clinical_domain',
   source_terminology_id:  'source_terminology_id',
   'source terminology':   'source_terminology_id',
 };
@@ -63,9 +115,11 @@ export interface IngestInput {
 }
 
 export interface IngestResult {
-  extractId:    string;
-  totalRows:    number;
-  skippedRows:  number;   // rows with missing required fields
+  extractId:       string;
+  totalRows:       number;
+  skippedRows:     number;    // rows with missing required fields
+  detectedColumns: string[];  // actual column headers found in the file
+  mappedColumns:   string[];  // which headers were successfully mapped
 }
 
 // -----------------------------------------------------------------
@@ -76,6 +130,23 @@ type RawRow = Record<string, string | number | null | undefined>;
 
 function normaliseHeader(h: string): string {
   return h.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Normalise a raw cell value from an EMR extract before storage.
+ * Applied to source_code and display_term.
+ * Preserves original case; strips non-printable characters and
+ * normalises whitespace. NFC unicode normalisation ensures that
+ * composed and decomposed forms (e.g. é vs é) are treated consistently.
+ */
+function normaliseCell(raw: string): string {
+  return raw
+    .normalize('NFC')
+    .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]/g, ' ')  // Unicode spaces → ASCII
+    .replace(/[\u00AD\u200B-\u200D\u2060]/g, '')                             // zero-width / soft-hyphen
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')                            // control characters
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function parseBuffer(filename: string, buffer: Buffer): RawRow[] {
@@ -111,8 +182,8 @@ function mapColumns(rows: RawRow[]): Array<{
       if (canonical) normalised[canonical] = val;
     }
 
-    const sourceCode  = String(normalised['source_code']  ?? '').trim();
-    const displayTerm = String(normalised['display_term'] ?? '').trim();
+    const sourceCode  = normaliseCell(String(normalised['source_code']  ?? ''));
+    const displayTerm = normaliseCell(String(normalised['display_term'] ?? ''));
     const freqRaw     = normalised['frequency'];
     const frequency   = freqRaw !== null && freqRaw !== undefined && freqRaw !== ''
       ? Math.round(Number(freqRaw))
@@ -152,6 +223,13 @@ export async function ingestExtract(input: IngestInput): Promise<IngestResult> {
     throw parseErr;
   }
 
+  // Detect actual headers for diagnostics
+  const detectedColumns = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
+  const mappedColumns   = detectedColumns
+    .map(h => normaliseHeader(h))
+    .filter(h => !!ALIAS[h])
+    .map(h => ALIAS[h]);
+
   const mappedRows = mapColumns(rawRows);
   let skippedRows  = 0;
 
@@ -159,36 +237,81 @@ export async function ingestExtract(input: IngestInput): Promise<IngestResult> {
   try {
     await client.query('BEGIN');
 
-    // Insert source terms — skip rows missing required fields
-    let inserted = 0;
+    // Build arrays for bulk unnest insert
+    const ids:                  string[]        = [];
+    const sourceCodes:          string[]        = [];
+    const displayTerms:         string[]        = [];
+    const displayTermMatches:   string[]        = [];   // NLP match form
+    const frequencies:          (number|null)[] = [];
+    const clinicalDomains:      (string|null)[] = [];
+    const sourceTerminologyIds: (string|null)[] = [];
+    const isNegatedArr:         boolean[]       = [];
+    const lateralityArr:        (string|null)[] = [];
+    const severityArr:          (string|null)[] = [];
+    const acuityArr:            (string|null)[] = [];
+    const certaintyArr:         (string|null)[] = [];
+
     for (const row of mappedRows) {
       if (!row.sourceCode || !row.displayTerm) {
         skippedRows++;
         continue;
       }
-      await client.query(
-        `INSERT INTO source_terms (
-          id, extract_id, project_id,
-          source_code, display_term, frequency,
-          clinical_domain, source_terminology_id,
-          is_out_of_place
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
-        ON CONFLICT DO NOTHING`,
-        [
-          uuidv4(),
-          extractId,
-          projectId,
-          row.sourceCode,
-          row.displayTerm,
-          row.frequency,
-          row.clinicalDomain,
-          row.sourceTerminologyId,
-        ],
-      );
-      inserted++;
+
+      // Run clinical NLP annotation (O(1) per term — pure regex, no DB)
+      const nlp = annotate(row.displayTerm);
+
+      ids.push(uuidv4());
+      sourceCodes.push(row.sourceCode);
+      displayTerms.push(row.displayTerm);
+      displayTermMatches.push(nlp.displayTermMatch);
+      frequencies.push(row.frequency);
+      clinicalDomains.push(row.clinicalDomain);
+      sourceTerminologyIds.push(row.sourceTerminologyId);
+      isNegatedArr.push(nlp.isNegated);
+      lateralityArr.push(nlp.laterality);
+      severityArr.push(nlp.qualifierSeverity);
+      acuityArr.push(nlp.qualifierAcuity);
+      certaintyArr.push(nlp.qualifierCertainty);
     }
 
-    const totalRows = inserted;
+    if (ids.length > 0) {
+      await client.query(
+        `INSERT INTO source_terms (
+           id, extract_id, project_id,
+           source_code, display_term, display_term_match, frequency,
+           clinical_domain, source_terminology_id,
+           is_out_of_place,
+           is_negated, laterality,
+           qualifier_severity, qualifier_acuity, qualifier_certainty
+         )
+         SELECT
+           unnest($1::uuid[]),
+           $2::uuid,
+           $3::uuid,
+           unnest($4::text[]),
+           unnest($5::text[]),
+           unnest($6::text[]),
+           unnest($7::int[]),
+           unnest($8::text[]),
+           unnest($9::uuid[]),
+           FALSE,
+           unnest($10::boolean[]),
+           unnest($11::text[]),
+           unnest($12::text[]),
+           unnest($13::text[]),
+           unnest($14::text[])
+         ON CONFLICT DO NOTHING`,
+        [
+          ids, extractId, projectId,
+          sourceCodes, displayTerms, displayTermMatches, frequencies,
+          clinicalDomains, sourceTerminologyIds,
+          isNegatedArr, lateralityArr,
+          severityArr, acuityArr, certaintyArr,
+        ],
+      );
+    }
+
+    const totalRows = ids.length;
 
     // Update emr_extract → ready
     await client.query(
@@ -238,7 +361,7 @@ export async function ingestExtract(input: IngestInput): Promise<IngestResult> {
       },
     });
 
-    return { extractId, totalRows, skippedRows };
+    return { extractId, totalRows, skippedRows, detectedColumns, mappedColumns };
 
   } catch (err) {
     await client.query('ROLLBACK');

@@ -130,25 +130,47 @@ Triggers: Node 6 — MAP (for each reviewer queue item, event-driven)
 
 5.7 Node 6 — MAP
 In:  Source term • AI suggestions • regex corpus hints • cross-project memory
-Out: Mapping decision (target concept + relationship type + rationale) per reviewer
+Out: Mapping decision (target concept + relationship type + rationale) per reviewer,
+     OR a "No target match" declaration with mandatory gap reason code and free-text rationale.
 Loop: Repeats for each term in the reviewer queue until all terms complete.
       Event-driven: each reviewer submission triggers comparison check.
-Branch A — both reviewers agree  → Node 8: CANONICALISE
-Branch B — reviewers disagree    → Node 7: ADJUDICATE
+Branch A — both reviewers agree on a concept        → Node 8: CANONICALISE
+Branch B — reviewers disagree on concept            → Node 7: ADJUDICATE
+Branch C — both reviewers declare "No target match" → Node 8: CANONICALISE (gap path)
+Branch D — one reviewer maps, one declares gap      → Node 7: ADJUDICATE (adjudicator resolves)
 Note: Batch accept permitted for manually mapped term clusters only.
       Batch accept of AI suggestions is prohibited.
+      "No target match" declarations may not be batch-applied; each term requires independent assessment.
+
+Gap reason codes (reviewer selects one):
+  GAP-01  Too specific — concept exists at a broader level but no sufficiently granular SNOMED CT concept
+  GAP-02  Local abbreviation — no standard equivalent exists
+  GAP-03  Compound concept — term conflates two or more SNOMED CT concepts with no pre-coordinated equivalent
+  GAP-04  Novel clinical concept — genuinely absent from current SNOMED CT release
+  GAP-05  Data quality — term is not a clinical concept (free-text note, transcription artefact, etc.)
+  GAP-06  Other — free-text rationale required
 
 5.8 Node 7 — ADJUDICATE
 In:  Source term • Reviewer A decision (anonymised) • Reviewer B decision (anonymised)
      Both rationale comments • terminology hierarchy context • regex corpus hints
-Out: Final mapping decision (adjudicator identity logged)
+Out: Final mapping decision — either a confirmed target concept OR a confirmed gap declaration
+     (adjudicator identity logged in both cases)
 Triggers: Node 8 — CANONICALISE (auto-accepted, no further approval required)
 
+Gap override: When one or both reviewers have declared "No target match", the adjudicator may:
+  (a) Confirm the gap — endorses the gap reason code; term proceeds to Node 8 as a confirmed gap.
+  (b) Override with a concept — adjudicator supplies a target concept and rationale; term proceeds
+      to Node 8 as a standard confirmed mapping. Adjudicator override is logged with mandatory
+      rationale. This path is intentional: reviewers may flag a gap to save time when searching
+      is difficult; adjudicators, with deeper expertise, can resolve terms that stymied reviewers.
+
 5.9 Node 8 — CANONICALISE
-Canonicalisation applies the OmniMap output convention to every confirmed mapping before it enters the corpus. This node receives input from two paths: (a) agreed or adjudicated reviewer mappings from Node 7, and (b) auto-matched terms from Node 4 that bypassed reviewer queues entirely. Both paths produce identical canonical output; the auto-accept flag distinguishes them in the audit log.
+Canonicalisation applies the OmniMap output convention to every confirmed mapping before it enters the corpus. This node receives input from three paths: (a) agreed or adjudicated reviewer mappings from Node 7, (b) auto-matched terms from Node 4 that bypassed reviewer queues entirely, and (c) confirmed gap terms from Node 6 or Node 7 where no target concept exists. All paths produce a canonical corpus record; the path type and gap flag distinguish them in the audit log.
 
 In:  Path A — Agreed or adjudicated mapping from Node 7
      Path B — Auto-matched term from Node 4 (source canonical = SNOMED CT FSN canonical)
+     Path C — Confirmed gap term (no target concept; gap reason code confirmed by both reviewers
+               or adjudicator)
 Out: Canonical mapping record with the following conventions applied:
      • Auto-accept flag set for Path B entries. Audit log records match basis.
      • Source text: stored as original. Upper-case normalisation applied at match time only.
@@ -283,11 +305,33 @@ Out: Precision • Recall • F1 • 95% CIs • pass/fail vs configured thresho
 Triggers: Node 13 — EXPORT
 
 5.14 Node 13 — EXPORT
-In:  Canonical mappings • validated regex patterns • scores • run reports
+In:  Canonical mappings • validated regex patterns • scores • run reports • confirmed gap terms
 Out: FHIR ConceptMap (R4/R5) • Regex JSON library • CSV/Excel • Validation Report PDF
+     SNOMED Gap Report (CSV/Excel — see §5.15)
      All exports include provenance metadata block.
      Administrator notified of any prior exports containing superseded mappings.
 Triggers: END (project archived, mappings added to institutional corpus)
+
+5.15 SNOMED Gap Report
+The SNOMED Gap Report is a structured export of all terms in the project confirmed as having no
+target concept match. Its purpose is to support submission to SNOMED International's Content
+Request System (CRS) and to inform OHN's terminology gap monitoring programme.
+
+Included per gap term:
+  • source_code — original EMR source code
+  • display_term — original display text as ingested
+  • frequency — occurrence count from the EMR extract
+  • clinical_domain — domain assigned at ingestion (if available)
+  • gap_reason_code — GAP-01 through GAP-06 (see §5.7)
+  • reviewer_rationale — free-text from reviewers (anonymised: Reviewer A / Reviewer B)
+  • adjudicator_note — adjudicator confirmation or override rationale (if applicable)
+  • confirmed_date — date gap was canonicalised
+  • project_id — source project for traceability
+
+Corpus behaviour: Gap terms enter the mapping corpus with snomed_concept_id = NULL and
+is_snomed_gap = TRUE. Future projects cross-referencing the corpus will surface these terms
+as previously-reviewed gaps, preventing duplicate review effort. If a subsequent SNOMED release
+resolves the gap, the administrator may re-open the term for mapping via the correction workflow.
 
 6. Functional Requirements
 
@@ -406,6 +450,40 @@ FR-107
 Administrator dashboard displays auto-accepted terms as a distinct category per project: count, % of mapping pool, and a reviewable list showing source term, matched FSN, and timestamp. Administrator can spot-check any auto-accepted mapping.
 Must Have
 Auto-accept is a bypass of the review workflow and must remain visible and auditable.
+
+6.3a SNOMED Gap Identification & Reporting (v2.4)
+ID
+Requirement
+Priority
+Notes
+FR-108
+Reviewer interface provides a "No target match" outcome alongside standard concept mapping. Reviewer must select a gap reason code (GAP-01 to GAP-06) and may supply free-text rationale. The outcome is recorded per reviewer independently; the term follows the same dual-review and comparison logic as standard mappings.
+Must Have
+"No target match" is a first-class mapping outcome, not an error state. It must be as easy to submit as a standard concept mapping to avoid reviewer friction.
+FR-109
+When both reviewers independently declare "No target match" for the same term, the system confirms the gap and routes the term to Node 8 CANONICALISE via the gap path (Path C), without escalating to adjudication.
+Must Have
+Mirrors Branch A logic for agreed concept mappings.
+FR-110
+When one reviewer maps a concept and the other declares "No target match", the term is escalated to Node 7 ADJUDICATE. The adjudicator sees both decisions (anonymised), both rationale notes, and may either confirm the gap or override with a concept mapping. Adjudicator override requires mandatory documented rationale.
+Must Have
+Adjudicator override is intentional: reviewers may flag a gap to save time when a search is difficult. Adjudicators, with deeper expertise, can resolve terms that stymied reviewers.
+FR-111
+Confirmed gap terms (both-reviewer agreement or adjudicator confirmation) enter the canonical corpus with snomed_concept_id = NULL and is_snomed_gap = TRUE. Gap reason code and combined rationale are stored on the corpus record.
+Must Have
+Corpus gap flag prevents duplicate review in future projects and enables trend monitoring.
+FR-112
+On Node 13 EXPORT, administrator may generate a SNOMED Gap Report (CSV or Excel) containing: source_code, display_term, frequency, clinical_domain, gap_reason_code, anonymised reviewer rationale, adjudicator note (if applicable), confirmed_date, project_id. Report is formatted for submission to SNOMED International's Content Request System (CRS).
+Must Have
+Export is the primary deliverable for feeding back to SNOMED International. Format must be CRS-compatible.
+FR-113
+When a future project ingests terms, the system cross-references the corpus gap list. Previously confirmed gap terms are surfaced to the administrator as known gaps — distinct from already-mapped terms — with the prior gap reason code and confirmation date. Administrator may include them in the new project if a new SNOMED release may have resolved the gap, or exclude them to avoid re-reviewing an unchanged gap.
+Must Have
+Prevents redundant review effort while allowing periodic re-evaluation as SNOMED CT evolves.
+FR-114
+Administrator dashboard includes a SNOMED Gap summary panel per project: total confirmed gaps, breakdown by gap reason code, and trend over time across projects (gap rate as % of mapping pool). High-frequency gap terms are highlighted as priority CRS candidates.
+Should Have
+Trend view enables OHN to track terminology coverage improvement over successive SNOMED CT releases.
 
 6.4 Reviewer Pool, Assignment & Load Balancing
 OmniMap uses a pool-based reviewer model. The administrator assigns a named pool of certified reviewers to each project. The system dynamically allocates terms from the pool, ensuring every term receives exactly two independent reviews, with allocation weighted by reviewer availability, throughput history, and terminology affinity.
@@ -1035,6 +1113,8 @@ Added Section 6.6 Data Persistence Requirements; Section 8 BPMN process diagrams
 Added Section 5 OmniMap Runtime DAG; regex pipeline (4 layers); output convention; post-run reporting; corpus architecture; event-driven Lambda pattern — March 2026
 2.3 Draft
 Identical-match auto-accept (Node 4 branch, FR-106/107); replaced discrepancy/agreement rate with adjudication rate throughout; removed inter-reviewer concordance measurement; updated success metrics; Node 8 dual input paths documented — March 2026
+2.4 Draft
+SNOMED Gap identification and reporting: Branch C added to Node 6 MAP (no-target-match outcome); adjudicator override path for gap decisions added to Node 7; Node 8 CANONICALISE updated for Path C gap terms; SNOMED Gap Report added to Node 13 EXPORT; new functional requirements FR-108 to FR-114; corpus gap flag (is_snomed_gap) added — March 2026
 Next Review
 Prior to Phase 1 sprint kickoff
 Document Owner

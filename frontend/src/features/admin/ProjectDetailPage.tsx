@@ -1,8 +1,8 @@
 // OmniMap — Admin: Project Detail
-// Shows project status and exposes DAG node controls (Nodes 1–5).
+// Shows project status and exposes DAG node controls (Nodes 1–8 + Export).
 
 import { useRef, useState } from 'react';
-import { useParams }        from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
@@ -24,6 +24,75 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
     <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-3">
       {children}
     </h3>
+  );
+}
+
+// -----------------------------------------------------------------
+// Human-readable node result
+// -----------------------------------------------------------------
+
+const RESULT_LABELS: Record<string, Record<string, string>> = {
+  ingest: {
+    totalRows:        'Terms ingested',
+    skippedRows:      'Rows skipped (missing required fields)',
+    detectedColumns:  'Columns detected in file',
+    mappedColumns:    'Columns mapped',
+  },
+  deduplicate: {
+    alreadyMapped:      'Already mapped in corpus',
+    netNewQueued:       'Net-new terms queued',
+    forwardedToSample:  'Terms forwarded to sampling',
+  },
+  sample: {
+    sampled:         'Terms selected for mapping',
+    longTailQueued:  'Long-tail terms queued',
+  },
+  holdout: {
+    holdoutN:      'Holdout size (power calc)',
+    holdoutDrawn:  'Terms drawn for holdout',
+    autoMatched:   'Auto-matched (SNOMED CT FSN)',
+    toAllocate:    'Terms to allocate to reviewers',
+  },
+  allocate: {
+    termsAllocated:      'Terms allocated',
+    longTailAllocated:   'Long-tail terms allocated',
+    assignmentsCreated:  'Reviewer assignments created',
+  },
+  canonicalise: {
+    canonicalised: 'Terms canonicalised',
+    skipped:       'Already canonicalised / skipped',
+  },
+};
+
+function NodeResult({ result }: { result: NodeResult }) {
+  const entries = Object.entries(result);
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded p-3 space-y-1.5">
+      {entries.map(([k, v]) => {
+        if (Array.isArray(v)) {
+          return (
+            <div key={k}>
+              <span className="text-xs text-slate-500">
+                {RESULT_LABELS['ingest']?.[k] ?? k}:
+              </span>
+              <span className="text-xs text-slate-700 ml-1">{(v as string[]).join(', ') || '—'}</span>
+            </div>
+          );
+        }
+        const label = Object.values(RESULT_LABELS).reduce<string | undefined>(
+          (found, map) => found ?? map[k], undefined,
+        ) ?? k;
+        const isWarning = k === 'skippedRows' && (v as number) > 0;
+        return (
+          <div key={k} className="flex justify-between items-baseline gap-4">
+            <span className="text-xs text-slate-500">{label}</span>
+            <span className={`text-sm font-medium tabular-nums ${isWarning ? 'text-amber-600' : 'text-slate-800'}`}>
+              {String(v)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -54,6 +123,7 @@ function NodePanel({
   error:       string | null;
   children?:   React.ReactNode;
 }) {
+  const done = !!result && !error;
   return (
     <div className="card p-4 space-y-3">
       <div className="flex items-start justify-between gap-4">
@@ -64,9 +134,10 @@ function NodePanel({
         <button
           className="btn-primary shrink-0"
           onClick={onRun}
-          disabled={loading}
+          disabled={loading || done}
+          title={done ? 'Already completed — reload page to re-run' : undefined}
         >
-          {loading ? 'Running…' : actionLabel}
+          {loading ? 'Running…' : done ? '✓ Done' : actionLabel}
         </button>
       </div>
 
@@ -78,11 +149,7 @@ function NodePanel({
         </p>
       )}
 
-      {result && (
-        <pre className="text-xs bg-slate-50 border border-slate-200 rounded p-3 overflow-x-auto text-slate-700">
-          {JSON.stringify(result, null, 2)}
-        </pre>
-      )}
+      {result && <NodeResult result={result} />}
     </div>
   );
 }
@@ -95,8 +162,9 @@ export default function ProjectDetailPage() {
   const { id }  = useParams<{ id: string }>();
   const qc      = useQueryClient();
 
-  const [results, setResults] = useState<Record<string, NodeResult>>({});
-  const [errors,  setErrors]  = useState<Record<string, string>>({});
+  const [results,  setResults]  = useState<Record<string, NodeResult>>({});
+  const [errors,   setErrors]   = useState<Record<string, string>>({});
+  const [loadings, setLoadings] = useState<Record<string, boolean>>({});
 
   // Ingest
   const fileRef = useRef<HTMLInputElement>(null);
@@ -126,11 +194,14 @@ export default function ProjectDetailPage() {
     node: string,
     fn: () => Promise<T>,
   ) {
+    setLoadings(prev => ({ ...prev, [node]: true }));
     try {
       const r = await fn();
       setResult(node, r as NodeResult);
     } catch (err) {
       setError(node, (err as Error).message);
+    } finally {
+      setLoadings(prev => ({ ...prev, [node]: false }));
     }
   }
 
@@ -208,9 +279,7 @@ export default function ProjectDetailPage() {
             <p className="text-xs text-red-600">{errors['ingest']}</p>
           )}
           {results['ingest'] && (
-            <pre className="text-xs bg-slate-50 border rounded p-3">
-              {JSON.stringify(results['ingest'], null, 2)}
-            </pre>
+            <NodeResult result={results['ingest']} />
           )}
         </div>
       </section>
@@ -224,7 +293,7 @@ export default function ProjectDetailPage() {
           actionLabel="Run"
           onRun={() => runMutation('deduplicate', () => api.projects.deduplicate(id!))}
           result={results['deduplicate'] ?? null}
-          loading={false}
+          loading={loadings['deduplicate'] ?? false}
           error={errors['deduplicate'] ?? null}
         />
       </section>
@@ -246,7 +315,7 @@ export default function ProjectDetailPage() {
             )
           }
           result={results['sample'] ?? null}
-          loading={false}
+          loading={loadings['sample'] ?? false}
           error={errors['sample'] ?? null}
         >
           <div className="flex items-center gap-4">
@@ -288,7 +357,7 @@ export default function ProjectDetailPage() {
           actionLabel="Draw holdout"
           onRun={() => runMutation('holdout', () => api.projects.holdout(id!))}
           result={results['holdout'] ?? null}
-          loading={false}
+          loading={loadings['holdout'] ?? false}
           error={errors['holdout'] ?? null}
         />
       </section>
@@ -302,9 +371,159 @@ export default function ProjectDetailPage() {
           actionLabel="Allocate"
           onRun={() => runMutation('allocate', () => api.projects.allocate(id!))}
           result={results['allocate'] ?? null}
-          loading={false}
+          loading={loadings['allocate'] ?? false}
           error={errors['allocate'] ?? null}
         />
+      </section>
+
+      {/* Node 6 — MAP (reviewer workspace) */}
+      <section>
+        <SectionHeading>Node 6 — MAP (Reviewer Workspace)</SectionHeading>
+        <div className="card p-4 space-y-3">
+          <div className="flex items-start justify-between">
+            <div>
+              <h4 className="font-medium text-slate-800">Open reviewer workspace</h4>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Dual-independent review. Each reviewer works from their own queue.
+                Agreed terms advance automatically; discrepancies go to adjudication.
+              </p>
+            </div>
+            <Link
+              to={`/reviewer/${id}/map`}
+              className="btn-secondary shrink-0 text-sm"
+            >
+              Open as reviewer →
+            </Link>
+          </div>
+          {project.currentDagNode === 'NODE_6_MAP' && (
+            <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-3 py-1.5">
+              Project is currently in the mapping phase.
+            </p>
+          )}
+        </div>
+      </section>
+
+      {/* Node 7 — Adjudicate */}
+      <section>
+        <SectionHeading>Node 7 — Adjudicate</SectionHeading>
+        <div className="card p-4 space-y-3">
+          <div className="flex items-start justify-between">
+            <div>
+              <h4 className="font-medium text-slate-800">Open adjudication queue</h4>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Discrepant reviewer decisions are queued here for adjudicator resolution.
+              </p>
+            </div>
+            <Link
+              to={`/adjudicator/${id}`}
+              className="btn-secondary shrink-0 text-sm"
+            >
+              Open adjudicator →
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Node 8 — Canonicalise */}
+      <section>
+        <SectionHeading>Node 8 — Canonicalise</SectionHeading>
+        <NodePanel
+          title="Write to canonical corpus"
+          description="Writes all agreed and adjudicated terms to the canonical_mappings table. Advances project to exporting."
+          actionLabel="Canonicalise"
+          onRun={() => runMutation('canonicalise', () => api.projects.canonicalise(id!))}
+          result={results['canonicalise'] ?? null}
+          loading={loadings['canonicalise'] ?? false}
+          error={errors['canonicalise'] ?? null}
+        />
+      </section>
+
+      {/* Node 13 — Export */}
+      <section>
+        <SectionHeading>Node 13 — Export</SectionHeading>
+
+        {/* Canonical mappings export */}
+        <div className="card p-4 space-y-3">
+          <div>
+            <h4 className="font-medium text-slate-800">Download canonical mappings</h4>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Export all current canonical mappings for this project.
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <a
+              href={`/api/projects/${id}/export?format=csv`}
+              className="btn-secondary text-sm"
+              download
+            >
+              Download CSV
+            </a>
+            <button
+              className="btn-secondary text-sm"
+              onClick={async () => {
+                try {
+                  const data = await api.projects.exportJson(id!);
+                  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                  const url  = URL.createObjectURL(blob);
+                  const a    = document.createElement('a');
+                  a.href = url; a.download = `omnimap-export-${id}.json`; a.click();
+                  URL.revokeObjectURL(url);
+                } catch (err) {
+                  setError('export', (err as Error).message);
+                }
+              }}
+            >
+              Download JSON
+            </button>
+          </div>
+          {errors['export'] && (
+            <p className="text-xs text-red-600">{errors['export']}</p>
+          )}
+        </div>
+
+        {/* SNOMED Gap Report */}
+        <div className="card p-4 space-y-3 mt-4">
+          <div>
+            <h4 className="font-medium text-slate-800">SNOMED Gap Report</h4>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Terms with no SNOMED CT mapping, categorised by gap reason code.
+              Use this report when submitting gaps to the SNOMED International Content Request System (CRS).
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <a
+              href={`/api/projects/${id}/gap-report?format=csv`}
+              className="btn-secondary text-sm"
+              download
+            >
+              Download Gap Report (CSV)
+            </a>
+            <button
+              className="btn-secondary text-sm"
+              onClick={async () => {
+                try {
+                  const data = await api.projects.gapReport(id!);
+                  if (data.total === 0) {
+                    alert('No SNOMED gap terms found for this project.');
+                    return;
+                  }
+                  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                  const url  = URL.createObjectURL(blob);
+                  const a    = document.createElement('a');
+                  a.href = url; a.download = `omnimap-gap-report-${id}.json`; a.click();
+                  URL.revokeObjectURL(url);
+                } catch (err) {
+                  setError('gapReport', (err as Error).message);
+                }
+              }}
+            >
+              Download Gap Report (JSON)
+            </button>
+          </div>
+          {errors['gapReport'] && (
+            <p className="text-xs text-red-600">{errors['gapReport']}</p>
+          )}
+        </div>
       </section>
     </div>
   );

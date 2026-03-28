@@ -7,7 +7,7 @@
 // Keyboard shortcuts:
 //   ↓/↑         move between queue items
 //   Enter       confirm current mapping
-//   U           mark unmappable
+//   U           toggle No SNOMED match mode
 //   /           focus search
 //   Escape      clear search
 //
@@ -19,8 +19,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams }   from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, type AssignedTerm, type MappingRelationship }
-  from '../../api/client';
+import {
+  api,
+  type AssignedTerm,
+  type MappingRelationship,
+  type ConceptSearchResult,
+  type GapReasonCode,
+  GAP_REASON_LABELS,
+} from '../../api/client';
 
 // -----------------------------------------------------------------
 // Types
@@ -31,6 +37,15 @@ interface TargetCandidate {
   targetDisplay:    string;
   relationshipType: MappingRelationship;
   isAiSuggestion:  boolean;
+}
+
+function toCandidate(r: ConceptSearchResult): TargetCandidate {
+  return {
+    targetCode:       r.targetCode,
+    targetDisplay:    r.targetDisplay,
+    relationshipType: r.relationshipType,
+    isAiSuggestion:  false,
+  };
 }
 
 // -----------------------------------------------------------------
@@ -79,6 +94,49 @@ function RelationshipSelect({
   );
 }
 
+// Gap reason code selector shown when "No SNOMED match" is active
+function GapReasonSelector({
+  value,
+  onChange,
+}: {
+  value:    GapReasonCode | '';
+  onChange: (v: GapReasonCode) => void;
+}) {
+  const codes = Object.keys(GAP_REASON_LABELS) as GapReasonCode[];
+  return (
+    <div className="mt-3 space-y-2">
+      <label className="label">
+        Gap reason <span className="text-red-500">*</span>
+      </label>
+      <div className="grid gap-1.5">
+        {codes.map(code => (
+          <label
+            key={code}
+            className={`flex items-start gap-3 px-3 py-2 rounded-md border cursor-pointer transition-colors ${
+              value === code
+                ? 'bg-orange-50 border-orange-400 text-orange-900'
+                : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+            }`}
+          >
+            <input
+              type="radio"
+              name="gapReasonCode"
+              value={code}
+              checked={value === code}
+              onChange={() => onChange(code)}
+              className="mt-0.5 accent-orange-500"
+            />
+            <span className="text-sm">
+              <span className="font-mono font-semibold mr-1.5">{code}</span>
+              {GAP_REASON_LABELS[code]}
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Simulated AI suggestions (placeholder until Python AI agent is wired in Phase E)
 function useAiSuggestions(term: AssignedTerm | null): TargetCandidate[] {
   if (!term) return [];
@@ -86,11 +144,14 @@ function useAiSuggestions(term: AssignedTerm | null): TargetCandidate[] {
   return [];
 }
 
-// Simulated terminology search (placeholder until SNOMED CT / LOINC APIs are wired)
 function useTerminologySearch(query: string): TargetCandidate[] {
-  // Stub — returns empty; real search hits the terminology API in Phase D
-  if (!query.trim()) return [];
-  return [];
+  const { data = [] } = useQuery({
+    queryKey: ['conceptSearch', query],
+    queryFn:  () => api.search.concepts(query),
+    enabled:  query.trim().length >= 2,
+    staleTime: 30_000,
+  });
+  return data.map(toCandidate);
 }
 
 // -----------------------------------------------------------------
@@ -101,12 +162,13 @@ export default function MapWorkspace() {
   const { projectId } = useParams<{ projectId: string }>();
   const qc            = useQueryClient();
 
-  const [activeIdx,   setActiveIdx]   = useState(0);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selected,    setSelected]    = useState<TargetCandidate[]>([]);
-  const [rationale,   setRationale]   = useState('');
-  const [isUnmappable, setIsUnmappable] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [activeIdx,     setActiveIdx]     = useState(0);
+  const [searchQuery,   setSearchQuery]   = useState('');
+  const [selected,      setSelected]      = useState<TargetCandidate[]>([]);
+  const [rationale,     setRationale]     = useState('');
+  const [isUnmappable,  setIsUnmappable]  = useState(false);
+  const [gapReasonCode, setGapReasonCode] = useState<GapReasonCode | ''>('');
+  const [submitError,   setSubmitError]   = useState<string | null>(null);
 
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -125,15 +187,16 @@ export default function MapWorkspace() {
     refetchInterval: 30_000,
   });
 
-  const activeTerm = queue[activeIdx] ?? null;
-  const aiSuggestions    = useAiSuggestions(activeTerm);
-  const searchResults    = useTerminologySearch(searchQuery);
+  const activeTerm    = queue[activeIdx] ?? null;
+  const aiSuggestions = useAiSuggestions(activeTerm);
+  const searchResults = useTerminologySearch(searchQuery);
 
   // Reset selection when term changes
   useEffect(() => {
     setSelected([]);
     setRationale('');
     setIsUnmappable(false);
+    setGapReasonCode('');
     setSearchQuery('');
     setSubmitError(null);
   }, [activeIdx, activeTerm?.projectTermId]);
@@ -146,6 +209,7 @@ export default function MapWorkspace() {
         assignmentId:  activeTerm.assignmentId,
         projectTermId: activeTerm.projectTermId,
         isUnmappable,
+        gapReasonCode: isUnmappable && gapReasonCode ? gapReasonCode : undefined,
         targets: selected.map(t => ({
           targetCode:       t.targetCode,
           targetDisplay:    t.targetDisplay,
@@ -164,6 +228,13 @@ export default function MapWorkspace() {
     onError: (err: Error) => setSubmitError(err.message),
   });
 
+  // Whether form is valid enough to submit
+  const canSubmit =
+    !submitMutation.isPending &&
+    (isUnmappable
+      ? !!gapReasonCode && (gapReasonCode !== 'GAP-06' || rationale.trim().length > 0)
+      : selected.length > 0);
+
   // ── Keyboard shortcuts ────────────────────────────────────────
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement).tagName;
@@ -179,13 +250,16 @@ export default function MapWorkspace() {
       e.preventDefault();
       searchRef.current?.focus();
     } else if (e.key === 'u' || e.key === 'U') {
-      setIsUnmappable(v => !v);
+      setIsUnmappable(v => {
+        const next = !v;
+        if (next) setSelected([]);
+        else setGapReasonCode('');
+        return next;
+      });
     } else if (e.key === 'Enter' && !e.shiftKey) {
-      if ((selected.length > 0 || isUnmappable) && !submitMutation.isPending) {
-        submitMutation.mutate();
-      }
+      if (canSubmit) submitMutation.mutate();
     }
-  }, [queue.length, selected.length, isUnmappable, submitMutation]);
+  }, [queue.length, canSubmit, submitMutation]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -252,7 +326,7 @@ export default function MapWorkspace() {
 
         {/* Keyboard hint */}
         <div className="px-4 py-2 text-xs text-slate-400 border-t border-slate-100">
-          ↑↓ navigate · / search · U unmappable · ↵ confirm
+          ↑↓ navigate · / search · U no match · ↵ confirm
         </div>
       </aside>
 
@@ -286,22 +360,43 @@ export default function MapWorkspace() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-              {/* Unmappable toggle */}
-              <label className="flex items-center gap-2 cursor-pointer w-fit">
-                <input
-                  type="checkbox"
-                  className="w-4 h-4 rounded border-slate-300 text-brand-600"
-                  checked={isUnmappable}
-                  onChange={e => {
-                    setIsUnmappable(e.target.checked);
-                    if (e.target.checked) setSelected([]);
+              {/* ── No SNOMED match toggle ────────────────────── */}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsUnmappable(v => {
+                      const next = !v;
+                      if (next) setSelected([]);
+                      else setGapReasonCode('');
+                      return next;
+                    });
                   }}
-                />
-                <span className="text-sm font-medium text-slate-700">
-                  Mark as unmappable (U)
-                </span>
-              </label>
+                  className={`inline-flex items-center gap-2 px-4 py-2 rounded-md border text-sm font-medium transition-colors ${
+                    isUnmappable
+                      ? 'bg-orange-100 border-orange-400 text-orange-800 hover:bg-orange-200'
+                      : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <span className={`w-4 h-4 rounded border-2 flex items-center justify-center ${
+                    isUnmappable ? 'border-orange-500 bg-orange-500' : 'border-slate-400'
+                  }`}>
+                    {isUnmappable && <span className="text-white text-xs leading-none">✓</span>}
+                  </span>
+                  No SNOMED match
+                  <kbd className="ml-1 px-1 py-0.5 text-xs bg-white border border-slate-200 rounded font-mono">U</kbd>
+                </button>
 
+                {/* Gap reason selector — shown when toggle is active */}
+                {isUnmappable && (
+                  <GapReasonSelector
+                    value={gapReasonCode}
+                    onChange={setGapReasonCode}
+                  />
+                )}
+              </div>
+
+              {/* ── Target search (hidden in gap mode) ───────── */}
               {!isUnmappable && (
                 <>
                   {/* Terminology search */}
@@ -352,9 +447,9 @@ export default function MapWorkspace() {
                       </ul>
                     )}
 
-                    {searchQuery && searchResults.length === 0 && (
+                    {searchQuery.trim().length >= 2 && searchResults.length === 0 && (
                       <p className="text-xs text-slate-400 mt-1 pl-1">
-                        No results — terminology search API will be wired in Phase D
+                        No matches in corpus. Try a different term or code.
                       </p>
                     )}
                   </div>
@@ -423,17 +518,24 @@ export default function MapWorkspace() {
                 </>
               )}
 
-              {/* Rationale */}
+              {/* Rationale — required for GAP-06, optional otherwise */}
               <div>
                 <label className="label">
-                  Rationale {isUnmappable && <span className="text-red-500">*</span>}
+                  Rationale
+                  {gapReasonCode === 'GAP-06' && (
+                    <span className="text-red-500 ml-1">* required for GAP-06</span>
+                  )}
                 </label>
                 <textarea
                   className="input"
                   rows={3}
-                  placeholder={isUnmappable
-                    ? 'Required: explain why this term cannot be mapped'
-                    : 'Optional: add a mapping rationale or note'}
+                  placeholder={
+                    gapReasonCode === 'GAP-06'
+                      ? 'Required: describe the gap reason in detail'
+                      : isUnmappable
+                        ? 'Optional: add context about the gap'
+                        : 'Optional: add a mapping rationale or note'
+                  }
                   value={rationale}
                   onChange={e => setRationale(e.target.value)}
                 />
@@ -459,16 +561,12 @@ export default function MapWorkspace() {
               <button
                 className="btn-primary px-8"
                 onClick={() => submitMutation.mutate()}
-                disabled={
-                  submitMutation.isPending ||
-                  (!isUnmappable && selected.length === 0) ||
-                  (isUnmappable && !rationale.trim())
-                }
+                disabled={!canSubmit}
               >
                 {submitMutation.isPending
                   ? 'Submitting…'
                   : isUnmappable
-                    ? 'Confirm unmappable (↵)'
+                    ? `Confirm: No SNOMED match (↵)`
                     : `Confirm mapping (↵)`}
               </button>
 

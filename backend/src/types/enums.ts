@@ -108,3 +108,23 @@ export enum SamplingStrategy {
   Frequency   = 'frequency',
   Pareto      = 'pareto',
 }
+
+// SNOMED Gap reason codes — PRD v2.4 §5.7, FR-108
+// Mirrors gap_reason_code ENUM in migration 005_snomed_gap.sql
+export enum GapReasonCode {
+  TooSpecific     = 'GAP-01',  // Concept exists at broader level only
+  LocalAbbrev     = 'GAP-02',  // No standard equivalent exists
+  CompoundConcept = 'GAP-03',  // Conflates 2+ SNOMED concepts; no pre-coordinated equivalent
+  NovelConcept    = 'GAP-04',  // Genuinely absent from current SNOMED CT release
+  DataQuality     = 'GAP-05',  // Not a clinical concept (free-text note, transcription artefact)
+  Other           = 'GAP-06',  // Free-text rationale required
+}
+
+export const GAP_REASON_LABELS: Record<GapReasonCode, string> = {
+  [GapReasonCode.TooSpecific]:     'Too specific — no sufficiently granular SNOMED CT concept',
+  [GapReasonCode.LocalAbbrev]:     'Local abbreviation — no standard equivalent',
+  [GapReasonCode.CompoundConcept]: 'Compound concept — conflates 2+ SNOMED CT concepts',
+  [GapReasonCode.NovelConcept]:    'Novel clinical concept — absent from current release',
+  [GapReasonCode.DataQuality]:     'Data quality issue — not a clinical concept',
+  [GapReasonCode.Other]:           'Other — rationale required',
+};

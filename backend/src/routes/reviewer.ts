@@ -12,7 +12,7 @@ import { v4 as uuidv4 }   from 'uuid';
 import { db }             from '../services/db';
 import { requireRole }    from '../middleware/rbac';
 import { AuditAction }    from '../middleware/auditLog';
-import { UserRole, TermStatus, MappingRelationship } from '../types/enums';
+import { UserRole, TermStatus, MappingRelationship, GapReasonCode } from '../types/enums';
 
 const router = Router({ mergeParams: true });
 
@@ -57,26 +57,29 @@ router.get(
 // -----------------------------------------------------------------
 // POST /reviewer/:projectId/map
 // Submit a mapping decision for one assigned term.
-// Body: { assignmentId, projectTermId, isUnmappable, targets[], rationale?, isAiAssisted? }
+// Body: { assignmentId, projectTermId, isUnmappable, gapReasonCode?, targets[], rationale?, isAiAssisted? }
 // targets: [{ targetCode, targetDisplay, relationshipType }]
 //
 // Batch accept of AI suggestions is PROHIBITED at the API level (PRD FR-48).
+// When isUnmappable=true, gapReasonCode is required (PRD FR-108).
+// When gapReasonCode=GAP-06 (Other), rationale is required.
 // -----------------------------------------------------------------
 router.post(
   '/:projectId/map',
   async (req: Request, res: Response, next: NextFunction) => {
-    const { assignmentId, projectTermId, isUnmappable, targets, rationale, isAiAssisted } =
+    const { assignmentId, projectTermId, isUnmappable, gapReasonCode, targets, rationale, isAiAssisted } =
       req.body as {
-        assignmentId:  string;
-        projectTermId: string;
-        isUnmappable:  boolean;
-        targets:       Array<{
+        assignmentId:   string;
+        projectTermId:  string;
+        isUnmappable:   boolean;
+        gapReasonCode?: GapReasonCode;
+        targets:        Array<{
           targetCode:       string;
           targetDisplay:    string;
           relationshipType: MappingRelationship;
         }>;
-        rationale?:    string;
-        isAiAssisted?: boolean;
+        rationale?:     string;
+        isAiAssisted?:  boolean;
       };
 
     // Validation
@@ -85,6 +88,12 @@ router.post(
     }
     if (!isUnmappable && (!Array.isArray(targets) || targets.length === 0)) {
       return res.status(400).json({ error: 'targets required when isUnmappable is false' });
+    }
+    if (isUnmappable && !gapReasonCode) {
+      return res.status(400).json({ error: 'gapReasonCode is required when isUnmappable is true' });
+    }
+    if (isUnmappable && gapReasonCode === GapReasonCode.Other && !rationale?.trim()) {
+      return res.status(400).json({ error: 'rationale is required for GAP-06 (Other)' });
     }
 
     const client = await db.connect();
@@ -116,9 +125,9 @@ router.post(
       await client.query(
         `INSERT INTO mapping_decisions (
            id, project_term_id, assignment_id, reviewer_id, project_id,
-           is_unmappable, unmappable_reason, rationale, is_ai_assisted,
+           is_unmappable, gap_reason_code, unmappable_reason, rationale, is_ai_assisted,
            version, is_current
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)`,
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)`,
         [
           decisionId,
           projectTermId,
@@ -126,6 +135,7 @@ router.post(
           req.user!.id,
           req.params.projectId,
           isUnmappable,
+          isUnmappable ? (gapReasonCode ?? null) : null,
           isUnmappable ? (rationale ?? null) : null,
           rationale ?? null,
           isAiAssisted ?? false,

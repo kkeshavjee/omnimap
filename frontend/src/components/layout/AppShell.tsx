@@ -1,8 +1,10 @@
 // OmniMap — App Shell
 // Role-based sidebar + top-bar layout. Renders nothing until auth resolves.
 
+import { useState, useEffect, useRef } from 'react';
 import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, type UserRole } from '../../contexts/AuthContext';
+import { api } from '../../api/client';
 
 interface NavItem {
   label: string;
@@ -12,11 +14,54 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { label: 'Projects',   to: '/admin/projects',  roles: ['administrator'],                                  icon: '📋' },
-  { label: 'My Queue',   to: '/reviewer/queue',  roles: ['reviewer'],                                       icon: '📝' },
-  { label: 'Adjudicate', to: '/adjudicator',     roles: ['adjudicator'],                                    icon: '⚖️' },
-  { label: 'Audit Log',  to: '/audit',           roles: ['administrator', 'auditor'],                       icon: '🔍' },
+  { label: 'Projects',       to: '/admin/projects',       roles: ['administrator'],                            icon: '📋' },
+  { label: 'My Queue',       to: '/reviewer/queue',       roles: ['reviewer', 'administrator'],                icon: '📝' },
+  { label: 'Adjudicate',     to: '/adjudicator',          roles: ['adjudicator', 'administrator'],             icon: '⚖️' },
+  { label: 'Audit Log',      to: '/audit',                roles: ['administrator', 'auditor'],                 icon: '🔍' },
+  { label: 'Regex Library',  to: '/admin/regex-library',  roles: ['administrator'],                            icon: '🔤' },
+  { label: 'Users',          to: '/admin/users',          roles: ['administrator'],                            icon: '👥' },
 ];
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Simple module-level cache so we don't re-fetch on every render
+const projectNameCache = new Map<string, string>();
+
+/**
+ * Turns the URL pathname into a human-readable breadcrumb.
+ * Replaces UUID segments with the corresponding project name.
+ */
+function useBreadcrumb(pathname: string): string {
+  const [projectLabel, setProjectLabel] = useState<string | null>(null);
+  const fetchedId = useRef<string | null>(null);
+
+  const segments = pathname.split('/').filter(Boolean);
+  const uuidSegment = segments.find(s => UUID_RE.test(s)) ?? null;
+
+  useEffect(() => {
+    if (!uuidSegment || fetchedId.current === uuidSegment) return;
+    if (projectNameCache.has(uuidSegment)) {
+      setProjectLabel(projectNameCache.get(uuidSegment)!);
+      return;
+    }
+    fetchedId.current = uuidSegment;
+    api.projects.get(uuidSegment)
+      .then(p => {
+        projectNameCache.set(uuidSegment, p.name);
+        setProjectLabel(p.name);
+      })
+      .catch(() => {
+        // Leave as UUID if fetch fails
+      });
+  }, [uuidSegment]);
+
+  const readableSegments = segments.map(seg => {
+    if (!UUID_RE.test(seg)) return seg.replace(/-/g, ' ');
+    return projectLabel ?? seg.slice(0, 8) + '…';
+  });
+
+  return readableSegments.join(' › ').toUpperCase() || 'HOME';
+}
 
 function StatusDot({ status }: { status: 'ok' }) {
   return <span className="inline-block w-2 h-2 rounded-full bg-green-400" title={status} />;
@@ -26,6 +71,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const navigate         = useNavigate();
   const location         = useLocation();
+  const breadcrumb       = useBreadcrumb(location.pathname);
 
   const visibleNav = NAV.filter(n => user && n.roles.includes(user.role));
 
@@ -84,7 +130,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* Top bar */}
         <header className="h-12 flex items-center px-6 bg-white border-b border-slate-200 shrink-0">
           <h1 className="text-sm font-semibold text-slate-600 truncate">
-            {location.pathname.replace(/\//g, ' › ').replace(/^ › /, '').toUpperCase() || 'HOME'}
+            {breadcrumb}
           </h1>
         </header>
 

@@ -5,9 +5,15 @@ import { AuthProvider, useAuth }    from './contexts/AuthContext';
 import RequireRole                  from './components/layout/RequireRole';
 import AppShell                     from './components/layout/AppShell';
 import LoginPage                    from './features/auth/LoginPage';
+import ForgotPasswordPage           from './features/auth/ForgotPasswordPage';
 import ProjectsPage                 from './features/admin/ProjectsPage';
 import ProjectDetailPage            from './features/admin/ProjectDetailPage';
 import MapWorkspace                 from './features/reviewer/MapWorkspace';
+import ReviewerProjectSelect        from './features/reviewer/ReviewerProjectSelect';
+import AdjudicatorWorkspace         from './features/adjudicator/AdjudicatorWorkspace';
+import AuditLogPage                 from './features/audit/AuditLogPage';
+import RegexLibraryPage            from './features/admin/RegexLibraryPage';
+import UsersPage                   from './features/admin/UsersPage';
 
 // Smart default redirect after login
 function HomeRedirect() {
@@ -20,23 +26,14 @@ function HomeRedirect() {
   return <Navigate to="/audit" replace />;
 }
 
-// Placeholder pages for future phases
-function ComingSoon({ page }: { page: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center h-full text-center gap-2 p-8">
-      <p className="text-4xl">🚧</p>
-      <p className="text-lg font-semibold text-slate-700">{page}</p>
-      <p className="text-sm text-slate-500">Coming in a future phase.</p>
-    </div>
-  );
-}
 
 function AppRoutes() {
   return (
     <Routes>
       {/* Public */}
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/"      element={<HomeRedirect />} />
+      <Route path="/login"           element={<LoginPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/"                element={<HomeRedirect />} />
 
       {/* Admin */}
       <Route
@@ -60,38 +57,64 @@ function AppRoutes() {
       <Route
         path="/reviewer/queue"
         element={
-          <RequireRole roles={['reviewer']}>
-            <AppShell>
-              <ComingSoon page="Select a project to open your queue" />
-            </AppShell>
+          <RequireRole roles={['reviewer', 'administrator']}>
+            <AppShell><ReviewerProjectSelect /></AppShell>
           </RequireRole>
         }
       />
       <Route
         path="/reviewer/:projectId/map"
         element={
-          <RequireRole roles={['reviewer']}>
+          <RequireRole roles={['reviewer', 'administrator']}>
             <AppShell><MapWorkspace /></AppShell>
           </RequireRole>
         }
       />
 
-      {/* Adjudicator — Phase D */}
+      {/* Adjudicator */}
       <Route
-        path="/adjudicator/*"
+        path="/adjudicator/:projectId"
         element={
-          <RequireRole roles={['adjudicator']}>
-            <AppShell><ComingSoon page="Adjudication workspace — Phase D" /></AppShell>
+          <RequireRole roles={['adjudicator', 'administrator']}>
+            <AppShell><AdjudicatorWorkspace /></AppShell>
+          </RequireRole>
+        }
+      />
+      <Route
+        path="/adjudicator"
+        element={
+          <RequireRole roles={['adjudicator', 'administrator']}>
+            <AppShell><ReviewerProjectSelect /></AppShell>
           </RequireRole>
         }
       />
 
-      {/* Auditor — Phase D */}
+      {/* Audit log */}
       <Route
-        path="/audit/*"
+        path="/audit"
         element={
           <RequireRole roles={['administrator', 'auditor']}>
-            <AppShell><ComingSoon page="Audit log — Phase D" /></AppShell>
+            <AppShell><AuditLogPage /></AppShell>
+          </RequireRole>
+        }
+      />
+
+      {/* Regex / Qualifier Pattern Library (admin only) */}
+      <Route
+        path="/admin/regex-library"
+        element={
+          <RequireRole roles={['administrator']}>
+            <AppShell><RegexLibraryPage /></AppShell>
+          </RequireRole>
+        }
+      />
+
+      {/* User management (admin only) */}
+      <Route
+        path="/admin/users"
+        element={
+          <RequireRole roles={['administrator']}>
+            <AppShell><UsersPage /></AppShell>
           </RequireRole>
         }
       />

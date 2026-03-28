@@ -233,7 +233,7 @@ export async function sampleTerms(input: SampleInput): Promise<SampleResult> {
     // Compute long-tail priority scores
     const longTailTerms = candidates.filter(t => longTailIds.has(t.projectTermId));
 
-    // Update sampled terms
+    // Update sampled terms (single bulk query)
     if (sampledIds.size > 0) {
       await client.query(
         `UPDATE project_terms
@@ -243,17 +243,25 @@ export async function sampleTerms(input: SampleInput): Promise<SampleResult> {
       );
     }
 
-    // Update long-tail terms with priority scores
-    for (const term of longTailTerms) {
-      const score = priorityScore(term, maxFreq);
+    // Update long-tail terms — single UNNEST bulk query instead of N individual UPDATEs
+    if (longTailTerms.length > 0) {
+      const ids         = longTailTerms.map(t => t.projectTermId);
+      const scores      = longTailTerms.map(t => priorityScore(t, maxFreq));
+      const domainRisks = longTailTerms.map(t => domainRisk(t.clinicalDomain) >= 0.8);
+
       await client.query(
-        `UPDATE project_terms
-         SET status = 'long_tail_queued',
-             long_tail_priority_score = $1,
-             domain_risk_flag = $2,
-             updated_at = now()
-         WHERE id = $3`,
-        [score, domainRisk(term.clinicalDomain) >= 0.8, term.projectTermId],
+        `UPDATE project_terms AS pt
+         SET status                   = 'long_tail_queued',
+             long_tail_priority_score = data.score,
+             domain_risk_flag         = data.risk,
+             updated_at               = now()
+         FROM (
+           SELECT UNNEST($1::uuid[])    AS id,
+                  UNNEST($2::float8[])  AS score,
+                  UNNEST($3::boolean[]) AS risk
+         ) AS data
+         WHERE pt.id = data.id`,
+        [ids, scores, domainRisks],
       );
     }
 

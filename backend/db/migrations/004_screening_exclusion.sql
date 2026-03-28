@@ -1,0 +1,9 @@
+-- =============================================================
+-- SUPERSEDED — this file has been replaced by 004_screening.sql
+--
+-- The category was renamed from 'screening_exclusion' to 'screening'
+-- to cover the full range of screening programme management entries:
+-- exclusions, abnormals, positives, overdue flags, declined tests, etc.
+--
+-- Nothing to run here.  See 004_screening.sql.
+-- =============================================================
