@@ -171,7 +171,6 @@ function UserRow({ user, currentUserId, onUpdated, onToggled }: UserRowProps) {
   }
 
   async function handleToggle() {
-    const action = user.isActive ? 'deactivate' : 'reactivate';
     const confirm_msg = user.isActive
       ? `Deactivate ${user.email}? They will be locked out immediately.`
       : `Reactivate ${user.email}? They will be able to log in again.`;

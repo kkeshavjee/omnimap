@@ -62,6 +62,33 @@ const RESULT_LABELS: Record<string, Record<string, string>> = {
     canonicalised: 'Terms canonicalised',
     skipped:       'Already canonicalised / skipped',
   },
+  regexPipeline: {
+    processed:        'Terms processed through pipeline',
+    r01ResidualUpper: 'R-01: Residual uppercase (incomplete match)',
+    r02NoMatch:       'R-02: No match (SNOMED gap terms)',
+    overGreedy:       'Over-greedy patterns flagged',
+  },
+  corpusUpdate: {
+    message: 'Status',
+  },
+  score: {
+    holdoutN:        'Holdout set size',
+    truePositives:   'True positives (TP)',
+    falsePositives:  'False positives (FP)',
+    trueNegatives:   'True negatives (TN)',
+    falseNegatives:  'False negatives (FN)',
+    precision:       'Precision',
+    recall:          'Recall',
+    f1:              'F1 score',
+    precisionCiLow:  'Precision 95% CI — lower',
+    precisionCiHigh: 'Precision 95% CI — upper',
+    recallCiLow:     'Recall 95% CI — lower',
+    recallCiHigh:    'Recall 95% CI — upper',
+    f1CiLow:         'F1 95% CI — lower',
+    f1CiHigh:        'F1 95% CI — upper',
+    f1Threshold:     'F1 threshold',
+    passed:          'Passed threshold',
+  },
 };
 
 function NodeResult({ result }: { result: NodeResult }) {
@@ -436,6 +463,77 @@ export default function ProjectDetailPage() {
           loading={loadings['canonicalise'] ?? false}
           error={errors['canonicalise'] ?? null}
         />
+      </section>
+
+      {/* Node 9 — Regex Pipeline */}
+      <section>
+        <SectionHeading>Node 9 — Regex Pipeline</SectionHeading>
+        <NodePanel
+          title="Run regex pipeline"
+          description="Applies five-layer qualifier pipeline (normalise → negation → qualifier → stop-word strip → concept tag) to all canonicalised terms. Writes xml_tagged_output to each canonical mapping."
+          actionLabel="Run pipeline"
+          onRun={() => runMutation('regexPipeline', () => api.projects.regexPipeline(id!))}
+          result={results['regexPipeline'] ?? null}
+          loading={loadings['regexPipeline'] ?? false}
+          error={errors['regexPipeline'] ?? null}
+        />
+      </section>
+
+      {/* Node 10 — Regex Validate */}
+      <section>
+        <SectionHeading>Node 10 — Regex Validate</SectionHeading>
+        <NodePanel
+          title="View pipeline report"
+          description="R-01: residual uppercase after pipeline (incomplete match). R-02: no-match terms (SNOMED gaps). Greediness: match/replacement ratio above threshold."
+          actionLabel="Load report"
+          onRun={() => runMutation('regexReport', () => api.projects.regexReport(id!))}
+          result={results['regexReport'] ?? null}
+          loading={loadings['regexReport'] ?? false}
+          error={errors['regexReport'] ?? null}
+        />
+      </section>
+
+      {/* Node 11 — Corpus Update */}
+      <section>
+        <SectionHeading>Node 11 — Corpus Update</SectionHeading>
+        <NodePanel
+          title="Advance to scoring"
+          description="Marks pipeline validation complete and advances project to the holdout scoring phase. Full corpus flywheel (auto-generate concept patterns) is Phase 2."
+          actionLabel="Advance to scoring"
+          onRun={() => runMutation('corpusUpdate', () => api.projects.corpusUpdate(id!))}
+          result={results['corpusUpdate'] ?? null}
+          loading={loadings['corpusUpdate'] ?? false}
+          error={errors['corpusUpdate'] ?? null}
+        />
+      </section>
+
+      {/* Node 12 — Score */}
+      <section>
+        <SectionHeading>Node 12 — Score</SectionHeading>
+        <NodePanel
+          title="Run holdout scoring"
+          description={`Validates mapping quality against the holdout set. Computes Precision, Recall, F1 with 95% CIs. Pass threshold: F1 ≥ ${project.powerF1Threshold}.`}
+          actionLabel="Run scoring"
+          onRun={() => runMutation('score', () => api.projects.score(id!))}
+          result={results['score'] ?? null}
+          loading={loadings['score'] ?? false}
+          error={errors['score'] ?? null}
+        >
+          {results['score'] && (
+            <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-semibold ${
+              (results['score'] as { passed?: boolean }).passed
+                ? 'bg-green-50 border-green-400 text-green-800'
+                : 'bg-red-50 border-red-400 text-red-800'
+            }`}>
+              {(results['score'] as { passed?: boolean }).passed ? '✓ Passed' : '✗ Failed'}
+              {' — F1 = '}
+              {String((results['score'] as { f1?: number }).f1 ?? '—')}
+              {' (threshold '}
+              {String((results['score'] as { f1Threshold?: number }).f1Threshold ?? project.powerF1Threshold)}
+              {')'}
+            </div>
+          )}
+        </NodePanel>
       </section>
 
       {/* Node 13 — Export */}
