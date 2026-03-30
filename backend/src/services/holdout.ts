@@ -270,12 +270,42 @@ export async function holdoutDrawAndAutomatch(
         const sourceCanonical = term.matchForm;  // pre-computed at ingest by clinicalNlp.annotate()
 
         if (isInfowayConfigured()) {
-          // ── Infoway FHIR: live SNOMED CT CA FSN exact match ──
+          // ── Infoway FHIR: two-pass exact match ──────────────────
+          //
+          // Pass 1 — canonical form (matchForm):
+          //   Uses the NLP-expanded form, e.g. "CAD" → "CORONARY ARTERY DISEASE",
+          //   "HTN" → "HYPERTENSION", punctuation stripped.
+          //   This catches abbreviation-expanded terms that have clear SNOMED PTs.
+          //
+          // Pass 2 — raw display term (displayTerm):
+          //   Falls back to the original EMR string when matchForm diverges.
+          //   Required for French-accented terms (ANXIÉTÉ, DÉPRESSION) whose
+          //   canonical form is garbled by the ASCII-only canonicaliser.
+          //   Also catches terms where the EMR form exactly matches a SNOMED synonym.
+          //
+          // We skip Pass 2 when matchForm === displayTerm.toUpperCase().trim()
+          // because in that case both passes are identical (avoids a duplicate call).
           try {
-            const hit = await findExactTerm(term.displayTerm);
+            // Pass 1: canonical / abbreviation-expanded form
+            let hit = await findExactTerm(term.matchForm);
+
+            // Pass 2: raw display term (only when it differs from matchForm)
+            if (!hit) {
+              const rawUpper = term.displayTerm.trim().toUpperCase();
+              if (rawUpper !== term.matchForm) {
+                hit = await findExactTerm(term.displayTerm);
+                if (hit) {
+                  console.log(`[automatch] Pass 2 match: "${term.displayTerm}" → ${hit.code} (matchForm was "${term.matchForm}")`);
+                }
+              } else {
+                // matchForm === displayTerm — single pass was sufficient diagnostic.
+                // Log so we can investigate when clean terms like GOUT still miss.
+                console.log(`[automatch] No match for "${term.displayTerm}" (matchForm="${term.matchForm}") — Infoway returned no exact hit`);
+              }
+            }
+
             if (hit) {
               matched = true;
-              // Store SNOMED code in auto_matched_fsn for use by canonicalise
               await client.query(
                 `UPDATE project_terms
                  SET status = 'auto_matched',
@@ -294,7 +324,12 @@ export async function holdoutDrawAndAutomatch(
                   null, 'AUTO_MATCH',
                   AuditAction.TERM_AUTO_MATCHED,
                   'project_term', term.projectTermId, projectId,
-                  JSON.stringify({ sourceCode: term.sourceCode, snomedCode: hit.code, source: 'infoway' }),
+                  JSON.stringify({
+                    sourceCode:  term.sourceCode,
+                    snomedCode:  hit.code,
+                    source:      'infoway',
+                    matchedOn:   hit.code ? 'matchForm' : 'displayTerm',
+                  }),
                 ],
               );
               autoMatched++;

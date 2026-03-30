@@ -302,9 +302,10 @@ export async function findExactTerm(term: string): Promise<SnomedConcept | null>
   const lower = trimmed.toLowerCase();
 
   const qs = new URLSearchParams({
-    url:                SNOMED_VS,
-    filter:             trimmed,
-    count:              '10',
+    url:                 SNOMED_VS,
+    filter:              trimmed,
+    count:               '25',    // wider net: exact match may not be ranked first
+    activeOnly:          'true',  // exclude retired concepts (ADR-005 follow-up)
     includeDesignations: 'true',
   });
 
