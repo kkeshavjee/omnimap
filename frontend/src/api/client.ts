@@ -111,11 +111,21 @@ export interface AuditLogEntry {
   occurredAt:  string;
 }
 
+export interface SnomedParentConcept {
+  code:    string;
+  display: string;
+}
+
 export interface ConceptSearchResult {
   targetCode:       string;
   targetDisplay:    string;
   relationshipType: MappingRelationship;
   usageCount:       number;
+  source?:          string;
+  /** Immediate parent concepts in the SNOMED IS-A hierarchy */
+  parents?:         SnomedParentConcept[];
+  /** SNOMED semantic tag from the FSN, e.g. "disorder", "finding", "procedure" */
+  semanticTag?:     string | null;
 }
 
 export interface AdjudicationDecision {

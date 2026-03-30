@@ -16,6 +16,7 @@ import { UserRole }          from '../types/enums';
 import {
   isInfowayConfigured,
   searchSnomedConcepts,
+  getSnomedConceptInfo,
 } from '../services/infowayFhir';
 
 const router = Router();
@@ -37,13 +38,20 @@ router.get(
         try {
           const concepts = await searchSnomedConcepts(q.trim(), limit);
           if (concepts.length > 0) {
+            // Enrich results with parent hierarchy + semantic tag in parallel.
+            // getSnomedConceptInfo never throws and caches results, so this is safe.
+            const infos = await Promise.all(
+              concepts.map(c => getSnomedConceptInfo(c.code)),
+            );
             return res.json(
-              concepts.map(c => ({
+              concepts.map((c, i) => ({
                 targetCode:       c.code,
                 targetDisplay:    c.display,
                 relationshipType: 'equivalent_to',
                 usageCount:       0,
                 source:           'infoway',
+                parents:          infos[i].parents,
+                semanticTag:      infos[i].semanticTag,
               })),
             );
           }

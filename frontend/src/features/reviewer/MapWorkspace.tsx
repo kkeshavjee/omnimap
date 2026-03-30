@@ -24,6 +24,7 @@ import {
   type AssignedTerm,
   type MappingRelationship,
   type ConceptSearchResult,
+  type SnomedParentConcept,
   type GapReasonCode,
   GAP_REASON_LABELS,
 } from '../../api/client';
@@ -36,7 +37,9 @@ interface TargetCandidate {
   targetCode:       string;
   targetDisplay:    string;
   relationshipType: MappingRelationship;
-  isAiSuggestion:  boolean;
+  isAiSuggestion:   boolean;
+  parents?:         SnomedParentConcept[];
+  semanticTag?:     string | null;
 }
 
 function toCandidate(r: ConceptSearchResult): TargetCandidate {
@@ -44,7 +47,9 @@ function toCandidate(r: ConceptSearchResult): TargetCandidate {
     targetCode:       r.targetCode,
     targetDisplay:    r.targetDisplay,
     relationshipType: r.relationshipType,
-    isAiSuggestion:  false,
+    isAiSuggestion:   false,
+    parents:          r.parents,
+    semanticTag:      r.semanticTag,
   };
 }
 
@@ -435,11 +440,29 @@ export default function MapWorkspace() {
                             className="px-3 py-2 hover:bg-brand-50 cursor-pointer flex items-start justify-between gap-4"
                             onClick={() => addTarget(r)}
                           >
-                            <div>
+                            <div className="min-w-0">
+                              {/* Concept name + semantic tag */}
                               <p className="text-sm font-medium text-slate-800">
                                 {r.targetDisplay}
+                                {r.semanticTag && (
+                                  <span className="ml-1.5 text-xs font-normal text-slate-400">
+                                    ({r.semanticTag})
+                                  </span>
+                                )}
                               </p>
+                              {/* SNOMED code */}
                               <p className="text-xs text-slate-400 font-mono">{r.targetCode}</p>
+                              {/* Parent hierarchy breadcrumb */}
+                              {r.parents && r.parents.filter(p => p.display).length > 0 && (
+                                <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
+                                  <span className="text-slate-300">↑</span>
+                                  {r.parents
+                                    .filter(p => p.display)
+                                    .slice(0, 2)
+                                    .map(p => p.display)
+                                    .join(' · ')}
+                                </p>
+                              )}
                             </div>
                             <span className="text-xs text-brand-600 shrink-0">+ add</span>
                           </li>
@@ -488,28 +511,41 @@ export default function MapWorkspace() {
                         {selected.map(t => (
                           <li
                             key={t.targetCode}
-                            className="flex items-start gap-3 px-3 py-2 bg-green-50 border border-green-200 rounded-md"
+                            className="flex flex-col gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-md"
                           >
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-slate-800 truncate">
-                                {t.targetDisplay || <span className="italic text-slate-400">No display name</span>}
-                                {t.isAiSuggestion && (
-                                  <span className="ml-2 text-xs text-amber-600">(AI)</span>
+                            {/* Concept name + code row */}
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-slate-800">
+                                  {t.targetDisplay || <span className="italic text-slate-400">No display name</span>}
+                                  {t.semanticTag && (
+                                    <span className="ml-1.5 text-xs font-normal text-slate-400">({t.semanticTag})</span>
+                                  )}
+                                  {t.isAiSuggestion && (
+                                    <span className="ml-2 text-xs text-amber-600">(AI)</span>
+                                  )}
+                                </p>
+                                <p className="text-xs text-slate-400 font-mono">{t.targetCode}</p>
+                                {t.parents && t.parents.filter(p => p.display).length > 0 && (
+                                  <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
+                                    <span className="text-slate-300">↑</span>
+                                    {t.parents.filter(p => p.display).slice(0, 2).map(p => p.display).join(' · ')}
+                                  </p>
                                 )}
-                              </p>
-                              <p className="text-xs text-slate-400 font-mono">{t.targetCode}</p>
+                              </div>
+                              <button
+                                onClick={() => removeTarget(t.targetCode)}
+                                className="text-slate-400 hover:text-red-600 text-lg leading-none shrink-0"
+                                title="Remove"
+                              >
+                                ×
+                              </button>
                             </div>
+                            {/* Relationship row */}
                             <RelationshipSelect
                               value={t.relationshipType}
                               onChange={rel => updateRelationship(t.targetCode, rel)}
                             />
-                            <button
-                              onClick={() => removeTarget(t.targetCode)}
-                              className="text-slate-400 hover:text-red-600 text-lg leading-none"
-                              title="Remove"
-                            >
-                              ×
-                            </button>
                           </li>
                         ))}
                       </ul>

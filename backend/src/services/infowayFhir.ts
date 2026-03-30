@@ -99,7 +99,7 @@ async function fhirGet<T>(path: string): Promise<T> {
 }
 
 // -----------------------------------------------------------------
-// Response type (ValueSet $expand)
+// Response types
 // -----------------------------------------------------------------
 
 interface FhirDesignation {
@@ -121,6 +121,20 @@ interface FhirValueSetExpansion {
   };
 }
 
+// CodeSystem/$lookup response shape (FHIR Parameters resource)
+interface FhirLookupParam {
+  name:           string;
+  valueString?:   string;
+  valueBoolean?:  boolean;
+  valueCoding?:   { system?: string; code?: string; display?: string };
+  valueCode?:     string;
+  part?:          FhirLookupParam[];
+}
+interface FhirLookupResponse {
+  resourceType: string;
+  parameter?:   FhirLookupParam[];
+}
+
 // -----------------------------------------------------------------
 // Public API
 // -----------------------------------------------------------------
@@ -130,9 +144,88 @@ export interface SnomedConcept {
   display: string;
 }
 
+/**
+ * Enriched concept info returned alongside search results.
+ * parents    — immediate parent concepts in the SNOMED IS-A hierarchy
+ * semanticTag — SNOMED semantic tag extracted from the FSN, e.g. "disorder", "finding"
+ */
+export interface SnomedConceptInfo extends SnomedConcept {
+  parents:     Array<{ code: string; display: string }>;
+  semanticTag: string | null;
+}
+
+// Module-level cache: concept code → enriched info (stable for SNOMED release lifetime)
+const conceptInfoCache = new Map<string, SnomedConceptInfo>();
+
 /** Whether the Infoway integration is configured. */
 export function isInfowayConfigured(): boolean {
   return !!(process.env.INFOWAY_CLIENT_ID && process.env.INFOWAY_CLIENT_SECRET);
+}
+
+// SNOMED designation use codes
+const FSN_USE_CODE = '900000000000003001';  // Fully Specified Name
+
+/**
+ * Fetch enriched concept info for a single SNOMED code.
+ * Returns parent concepts and semantic tag (extracted from FSN).
+ * Results are cached in-process — stable for a SNOMED release.
+ * Never throws; returns a minimal stub on failure.
+ */
+export async function getSnomedConceptInfo(code: string): Promise<SnomedConceptInfo> {
+  if (conceptInfoCache.has(code)) return conceptInfoCache.get(code)!;
+
+  const stub: SnomedConceptInfo = { code, display: code, parents: [], semanticTag: null };
+
+  if (!isInfowayConfigured()) return stub;
+
+  try {
+    const qs = new URLSearchParams({ system: SNOMED_SYSTEM, code, property: 'parent' });
+    const data = await fhirGet<FhirLookupResponse>(`/CodeSystem/$lookup?${qs.toString()}`);
+
+    const parents: Array<{ code: string; display: string }> = [];
+    let semanticTag: string | null = null;
+    let display = stub.display;
+
+    for (const param of data.parameter ?? []) {
+      // Top-level display (Preferred Term)
+      if (param.name === 'display' && param.valueString) {
+        display = param.valueString;
+      }
+
+      // FSN designation → extract semantic tag from trailing "(xxx)"
+      if (param.name === 'designation') {
+        const usePart   = param.part?.find(p => p.name === 'use');
+        const valuePart = param.part?.find(p => p.name === 'value');
+        if (
+          usePart?.valueCoding?.code === FSN_USE_CODE &&
+          valuePart?.valueString
+        ) {
+          const m = valuePart.valueString.match(/\(([^)]+)\)$/);
+          if (m) semanticTag = m[1];
+        }
+      }
+
+      // Property: parent
+      if (param.name === 'property') {
+        const codePart  = param.part?.find(p => p.name === 'code');
+        const valuePart = param.part?.find(p => p.name === 'value');
+        if (codePart?.valueCode === 'parent' && valuePart?.valueCoding?.code) {
+          parents.push({
+            code:    valuePart.valueCoding.code,
+            display: valuePart.valueCoding.display ?? '',
+          });
+        }
+      }
+    }
+
+    const info: SnomedConceptInfo = { code, display, parents, semanticTag };
+    conceptInfoCache.set(code, info);
+    return info;
+  } catch {
+    // Cache the stub so we don't retry on every search
+    conceptInfoCache.set(code, stub);
+    return stub;
+  }
 }
 
 /**
