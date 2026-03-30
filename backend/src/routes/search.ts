@@ -1,5 +1,6 @@
 // OmniMap — Terminology Concept Search
 // GET /search/concepts?q=&terminologyId=&limit=
+// GET /search/concept-info?codes=59621000,1201005,...
 //
 // Search strategy (in priority order):
 //   1. Infoway FHIR Terminology Server (SNOMED CT CA) — if INFOWAY_CLIENT_ID is set
@@ -7,7 +8,10 @@
 //   2. Corpus fallback — searches canonical_mappings for previously used codes
 //      Used when Infoway is not configured or the query fails
 //
-// Returns at most `limit` (default 20, max 50) candidates.
+// Hierarchy enrichment is intentionally NOT bundled with search results.
+// The client fetches concept-info asynchronously after results render, so
+// search latency is not inflated for the common case (obvious single match).
+// See decision framework in CLAUDE.md: "pay latency only when it blocks action."
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { db }                from '../services/db';
@@ -20,6 +24,8 @@ import {
 } from '../services/infowayFhir';
 
 const router = Router();
+
+// ── GET /search/concepts ───────────────────────────────────────────────────
 
 router.get(
   '/concepts',
@@ -38,20 +44,16 @@ router.get(
         try {
           const concepts = await searchSnomedConcepts(q.trim(), limit);
           if (concepts.length > 0) {
-            // Enrich results with parent hierarchy + semantic tag in parallel.
-            // getSnomedConceptInfo never throws and caches results, so this is safe.
-            const infos = await Promise.all(
-              concepts.map(c => getSnomedConceptInfo(c.code)),
-            );
+            // Return bare results immediately — hierarchy is fetched async
+            // by the client via GET /search/concept-info to avoid blocking
+            // search response on N parallel Infoway $lookup calls.
             return res.json(
-              concepts.map((c, i) => ({
+              concepts.map(c => ({
                 targetCode:       c.code,
                 targetDisplay:    c.display,
                 relationshipType: 'equivalent_to',
                 usageCount:       0,
                 source:           'infoway',
-                parents:          infos[i].parents,
-                semanticTag:      infos[i].semanticTag,
               })),
             );
           }
@@ -101,6 +103,43 @@ router.get(
       );
 
       res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ── GET /search/concept-info?codes=59621000,1201005,... ───────────────────
+//
+// Batch hierarchy lookup — called asynchronously by the client after search
+// results render. Returns a map of code → { parents, semanticTag }.
+// Capped at 20 codes per request. Results are cached in-process.
+
+router.get(
+  '/concept-info',
+  requireRole(UserRole.Reviewer, UserRole.Adjudicator, UserRole.Administrator),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawCodes = (req.query.codes as string | undefined) ?? '';
+      const codes = rawCodes
+        .split(',')
+        .map(c => c.trim())
+        .filter(Boolean)
+        .slice(0, 20);
+
+      if (codes.length === 0) return res.json({});
+
+      const infos = await Promise.all(codes.map(code => getSnomedConceptInfo(code)));
+
+      const result: Record<string, { parents: { code: string; display: string }[]; semanticTag: string | null }> = {};
+      codes.forEach((code, i) => {
+        result[code] = {
+          parents:     infos[i].parents,
+          semanticTag: infos[i].semanticTag,
+        };
+      });
+
+      res.json(result);
     } catch (err) {
       next(err);
     }

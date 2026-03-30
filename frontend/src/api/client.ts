@@ -441,12 +441,21 @@ export const api = {
     },
   },
 
-  // Concept search (corpus-driven)
+  // Concept search
   search: {
     concepts: (q: string, terminologyId?: string) => {
       const qs = new URLSearchParams({ q });
       if (terminologyId) qs.set('terminologyId', terminologyId);
       return request<ConceptSearchResult[]>('GET', `/search/concepts?${qs.toString()}`);
+    },
+    // Async hierarchy enrichment — call after search results render.
+    // Returns a map of SNOMED code → { parents, semanticTag }.
+    conceptInfo: (codes: string[]) => {
+      if (codes.length === 0) return Promise.resolve({} as Record<string, { parents: SnomedParentConcept[]; semanticTag: string | null }>);
+      return request<Record<string, { parents: SnomedParentConcept[]; semanticTag: string | null }>>(
+        'GET',
+        `/search/concept-info?codes=${codes.join(',')}`,
+      );
     },
   },
 

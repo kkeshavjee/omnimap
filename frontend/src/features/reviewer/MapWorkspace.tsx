@@ -29,6 +29,12 @@ import {
   GAP_REASON_LABELS,
 } from '../../api/client';
 
+// Shape of each entry returned by /search/concept-info
+interface ConceptHierarchyInfo {
+  parents:     SnomedParentConcept[];
+  semanticTag: string | null;
+}
+
 // -----------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------
@@ -149,14 +155,28 @@ function useAiSuggestions(term: AssignedTerm | null): TargetCandidate[] {
   return [];
 }
 
-function useTerminologySearch(query: string): TargetCandidate[] {
+function useTerminologySearch(query: string): {
+  results:   TargetCandidate[];
+  hierarchy: Record<string, ConceptHierarchyInfo>;
+} {
   const { data = [] } = useQuery({
     queryKey: ['conceptSearch', query],
     queryFn:  () => api.search.concepts(query),
     enabled:  query.trim().length >= 2,
     staleTime: 30_000,
   });
-  return data.map(toCandidate);
+
+  // Async hierarchy: fires after search results render, keyed on the
+  // sorted code list so it only re-fetches when the result set changes.
+  const codeKey = data.map(r => r.targetCode).sort().join(',');
+  const { data: hierarchy = {} } = useQuery({
+    queryKey: ['conceptHierarchy', codeKey],
+    queryFn:  () => api.search.conceptInfo(data.map(r => r.targetCode)),
+    enabled:  data.length > 0,
+    staleTime: Infinity,   // SNOMED hierarchy is stable for a release
+  });
+
+  return { results: data.map(toCandidate), hierarchy };
 }
 
 // -----------------------------------------------------------------
@@ -194,7 +214,7 @@ export default function MapWorkspace() {
 
   const activeTerm    = queue[activeIdx] ?? null;
   const aiSuggestions = useAiSuggestions(activeTerm);
-  const searchResults = useTerminologySearch(searchQuery);
+  const { results: searchResults, hierarchy } = useTerminologySearch(searchQuery);
 
   // Reset selection when term changes
   useEffect(() => {
@@ -434,39 +454,39 @@ export default function MapWorkspace() {
                     {/* Search results */}
                     {searchResults.length > 0 && (
                       <ul className="mt-1 border border-slate-200 rounded-md divide-y divide-slate-100 shadow-sm">
-                        {searchResults.map(r => (
-                          <li
-                            key={r.targetCode}
-                            className="px-3 py-2 hover:bg-brand-50 cursor-pointer flex items-start justify-between gap-4"
-                            onClick={() => addTarget(r)}
-                          >
-                            <div className="min-w-0">
-                              {/* Concept name + semantic tag */}
-                              <p className="text-sm font-medium text-slate-800">
-                                {r.targetDisplay}
-                                {r.semanticTag && (
-                                  <span className="ml-1.5 text-xs font-normal text-slate-400">
-                                    ({r.semanticTag})
-                                  </span>
-                                )}
-                              </p>
-                              {/* SNOMED code */}
-                              <p className="text-xs text-slate-400 font-mono">{r.targetCode}</p>
-                              {/* Parent hierarchy breadcrumb */}
-                              {r.parents && r.parents.filter(p => p.display).length > 0 && (
-                                <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
-                                  <span className="text-slate-300">↑</span>
-                                  {r.parents
-                                    .filter(p => p.display)
-                                    .slice(0, 2)
-                                    .map(p => p.display)
-                                    .join(' · ')}
+                        {searchResults.map(r => {
+                          const info = hierarchy[r.targetCode];
+                          const parents = info?.parents.filter(p => p.display) ?? [];
+                          return (
+                            <li
+                              key={r.targetCode}
+                              className="px-3 py-2 hover:bg-brand-50 cursor-pointer flex items-start justify-between gap-4"
+                              onClick={() => addTarget({ ...r, parents: info?.parents, semanticTag: info?.semanticTag })}
+                            >
+                              <div className="min-w-0">
+                                {/* Concept name + semantic tag */}
+                                <p className="text-sm font-medium text-slate-800">
+                                  {r.targetDisplay}
+                                  {info?.semanticTag && (
+                                    <span className="ml-1.5 text-xs font-normal text-slate-400">
+                                      ({info.semanticTag})
+                                    </span>
+                                  )}
                                 </p>
-                              )}
-                            </div>
-                            <span className="text-xs text-brand-600 shrink-0">+ add</span>
-                          </li>
-                        ))}
+                                {/* SNOMED code */}
+                                <p className="text-xs text-slate-400 font-mono">{r.targetCode}</p>
+                                {/* Parent hierarchy breadcrumb — loads async, fades in */}
+                                {parents.length > 0 && (
+                                  <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
+                                    <span className="text-slate-300">↑</span>
+                                    {parents.slice(0, 2).map(p => p.display).join(' · ')}
+                                  </p>
+                                )}
+                              </div>
+                              <span className="text-xs text-brand-600 shrink-0">+ add</span>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
 
