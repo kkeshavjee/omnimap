@@ -3,8 +3,8 @@
 
 import { useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '../../api/client';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { api, type ReviewerPoolMember } from '../../api/client';
 
 // -----------------------------------------------------------------
 // Helpers
@@ -112,18 +112,23 @@ function NodePanel({
   result,
   loading,
   error,
+  locked,
+  lockedReason,
   children,
 }: {
-  title:       string;
-  description: string;
-  actionLabel: string;
-  onRun:       () => void;
-  result:      NodeResult | null;
-  loading:     boolean;
-  error:       string | null;
-  children?:   React.ReactNode;
+  title:         string;
+  description:   string;
+  actionLabel:   string;
+  onRun:         () => void;
+  result:        NodeResult | null;
+  loading:       boolean;
+  error:         string | null;
+  locked?:       boolean;
+  lockedReason?: string;
+  children?:     React.ReactNode;
 }) {
   const done = !!result && !error;
+  const isDisabled = loading || !!locked;
   return (
     <div className="card p-4 space-y-3">
       <div className="flex items-start justify-between gap-4">
@@ -134,12 +139,18 @@ function NodePanel({
         <button
           className="btn-primary shrink-0"
           onClick={onRun}
-          disabled={loading || done}
-          title={done ? 'Already completed — reload page to re-run' : undefined}
+          disabled={isDisabled}
+          title={locked ? lockedReason : undefined}
         >
           {loading ? 'Running…' : done ? '✓ Done' : actionLabel}
         </button>
       </div>
+
+      {locked && lockedReason && (
+        <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded px-3 py-2">
+          🔒 {lockedReason}
+        </p>
+      )}
 
       {children}
 
@@ -151,6 +162,91 @@ function NodePanel({
 
       {result && <NodeResult result={result} />}
     </div>
+  );
+}
+
+// -----------------------------------------------------------------
+// Reviewer Pool Section
+// -----------------------------------------------------------------
+
+function ReviewerPoolSection({ projectId, poolLocked }: { projectId: string; poolLocked: boolean }) {
+  const qc = useQueryClient();
+
+  const { data: members = [], isLoading } = useQuery({
+    queryKey: ['reviewer-pool', projectId],
+    queryFn:  () => api.projects.reviewerPool.list(projectId),
+  });
+
+  const addMutation = useMutation({
+    mutationFn: (reviewerId: string) => api.projects.reviewerPool.add(projectId, reviewerId),
+    onSuccess:  () => qc.invalidateQueries({ queryKey: ['reviewer-pool', projectId] }),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (reviewerId: string) => api.projects.reviewerPool.remove(projectId, reviewerId),
+    onSuccess:  () => qc.invalidateQueries({ queryKey: ['reviewer-pool', projectId] }),
+  });
+
+  const inPool  = members.filter((m: ReviewerPoolMember) => m.inPool);
+  const pending = addMutation.isPending || removeMutation.isPending;
+
+  return (
+    <section>
+      <SectionHeading>Reviewer Pool</SectionHeading>
+      <div className="card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            Select at least 2 reviewers for this project. Every term will be assigned to exactly 2.
+          </p>
+          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+            inPool.length >= 2
+              ? 'bg-green-100 text-green-700'
+              : 'bg-amber-100 text-amber-700'
+          }`}>
+            {inPool.length} in pool
+          </span>
+        </div>
+
+        {poolLocked && (
+          <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded px-3 py-2">
+            🔒 Pool is locked — allocation has already run
+          </p>
+        )}
+
+        {isLoading && <p className="text-xs text-slate-400">Loading reviewers…</p>}
+
+        {!isLoading && members.length === 0 && (
+          <p className="text-xs text-amber-600">
+            No active reviewer accounts found. Invite reviewers via Admin → Users first.
+          </p>
+        )}
+
+        {members.map((m: ReviewerPoolMember) => (
+          <div key={m.id} className="flex items-center justify-between py-1.5 border-b border-slate-100 last:border-0">
+            <div>
+              <span className="text-sm text-slate-800">{m.displayName}</span>
+              <span className="text-xs text-slate-400 ml-2">{m.email}</span>
+            </div>
+            <button
+              className={m.inPool ? 'btn-secondary text-xs' : 'btn-primary text-xs'}
+              disabled={pending || poolLocked}
+              onClick={() => m.inPool
+                ? removeMutation.mutate(m.id)
+                : addMutation.mutate(m.id)
+              }
+            >
+              {m.inPool ? 'Remove' : 'Add to pool'}
+            </button>
+          </div>
+        ))}
+
+        {(addMutation.error || removeMutation.error) && (
+          <p className="text-xs text-red-600">
+            {((addMutation.error || removeMutation.error) as Error).message}
+          </p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -237,12 +333,16 @@ export default function ProjectDetailPage() {
           <span className="badge-blue">{project.status.replace(/_/g, ' ')}</span>
         </div>
         <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-          <Field label="Type"       value={project.projectType.replace(/_/g, ' ')} />
-          <Field label="DAG node"   value={project.currentDagNode} />
+          <Field label="Type"         value={project.projectType.replace(/_/g, ' ')} />
+          <Field label="DAG node"     value={project.currentDagNode} />
           <Field label="F1 threshold" value={project.powerF1Threshold} />
-          <Field label="Alpha"      value={project.powerAlpha} />
-          <Field label="Power (1−β)" value={(1 - project.powerBeta).toFixed(2)} />
-          <Field label="Holdout n"  value={project.computedHoldoutN} />
+          <Field label="Alpha"        value={project.powerAlpha} />
+          <Field label="Power (1−β)"  value={(1 - project.powerBeta).toFixed(2)} />
+          <Field label="Holdout n"    value={project.computedHoldoutN} />
+          <Field label="Sample size"  value={project.sampleSize ?? '—'} />
+          <Field label="Sample ID"    value={project.sampleConfigId
+            ? <span className="font-mono text-xs break-all">{project.sampleConfigId}</span>
+            : '—'} />
           <Field label="Sample locked" value={project.sampleLockedAt
             ? new Date(project.sampleLockedAt).toLocaleDateString() : 'No'} />
           <Field label="Holdout locked" value={project.holdoutLockedAt
@@ -266,15 +366,22 @@ export default function ProjectDetailPage() {
               type="file"
               accept=".csv,.tsv,.xlsx,.xls"
               className="text-sm text-slate-600 file:mr-3 file:btn-secondary"
+              disabled={!!project.holdoutLockedAt}
             />
             <button
               className="btn-primary"
               onClick={handleIngest}
-              disabled={ingestLoading}
+              disabled={ingestLoading || !!project.holdoutLockedAt}
+              title={project.holdoutLockedAt ? 'Holdout is locked — re-ingesting would corrupt the pipeline' : undefined}
             >
               {ingestLoading ? 'Uploading…' : 'Upload & ingest'}
             </button>
           </div>
+          {project.holdoutLockedAt && (
+            <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded px-3 py-2">
+              🔒 Holdout is locked — re-ingesting would corrupt the pipeline
+            </p>
+          )}
           {errors['ingest'] && (
             <p className="text-xs text-red-600">{errors['ingest']}</p>
           )}
@@ -295,6 +402,8 @@ export default function ProjectDetailPage() {
           result={results['deduplicate'] ?? null}
           loading={loadings['deduplicate'] ?? false}
           error={errors['deduplicate'] ?? null}
+          locked={!!project.sampleLockedAt}
+          lockedReason="Sample is locked — deduplication cannot be re-run after Node 3 has completed"
         />
       </section>
 
@@ -317,6 +426,8 @@ export default function ProjectDetailPage() {
           result={results['sample'] ?? null}
           loading={loadings['sample'] ?? false}
           error={errors['sample'] ?? null}
+          locked={!!project.holdoutLockedAt}
+          lockedReason="Holdout is locked — sampling cannot be re-run after Node 4 has completed"
         >
           <div className="flex items-center gap-4">
             <div>
@@ -359,8 +470,16 @@ export default function ProjectDetailPage() {
           result={results['holdout'] ?? null}
           loading={loadings['holdout'] ?? false}
           error={errors['holdout'] ?? null}
+          locked={!!project.holdoutLockedAt}
+          lockedReason={`Holdout already drawn on ${project.holdoutLockedAt ? new Date(project.holdoutLockedAt).toLocaleDateString() : ''} — cannot run Node 4 again`}
         />
       </section>
+
+      {/* Reviewer Pool — must be configured before Node 5 */}
+      <ReviewerPoolSection projectId={id!} poolLocked={
+        !['init','ingesting','deduplicating','sampling','holdout_draw','automatch','allocating']
+          .includes(project.status)
+      } />
 
       {/* Node 5 — Allocate */}
       <section>
@@ -373,6 +492,8 @@ export default function ProjectDetailPage() {
           result={results['allocate'] ?? null}
           loading={loadings['allocate'] ?? false}
           error={errors['allocate'] ?? null}
+          locked={!project.holdoutLockedAt}
+          lockedReason="Draw holdout first — Node 4 must complete before terms can be allocated"
         />
       </section>
 

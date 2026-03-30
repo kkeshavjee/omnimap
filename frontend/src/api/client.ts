@@ -205,9 +205,20 @@ export interface Project {
   nearDuplicateEditDistance:  number;
   sampleLockedAt:        string | null;
   holdoutLockedAt:       string | null;
+  sampleConfigId:        string | null;
+  sampleSize:            number | null;
   createdBy:             string;
   createdAt:             string;
   updatedAt:             string;
+}
+
+export interface ReviewerPoolMember {
+  id:           string;
+  email:        string;
+  displayName:  string;
+  inPool:       boolean;
+  termsPerDay:  number | null;
+  hoursPerWeek: number | null;
 }
 
 export interface Terminology {
@@ -377,6 +388,15 @@ export const api = {
       ),
 
     gapReportCsvUrl: (projectId: string) => `/api/projects/${projectId}/gap-report?format=csv`,
+
+    reviewerPool: {
+      list:   (projectId: string) =>
+        request<ReviewerPoolMember[]>('GET', `/projects/${projectId}/reviewer-pool`),
+      add:    (projectId: string, reviewerId: string) =>
+        request<{ ok: boolean }>('POST', `/projects/${projectId}/reviewer-pool`, { reviewerId }),
+      remove: (projectId: string, reviewerId: string) =>
+        request<{ ok: boolean }>('DELETE', `/projects/${projectId}/reviewer-pool/${reviewerId}`),
+    },
   },
 
   // Adjudicator

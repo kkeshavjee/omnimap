@@ -89,26 +89,38 @@ router.get(
     try {
       const { rows } = await db.query(
         `SELECT
-           id, name, description,
-           project_type              AS "projectType",
-           source_terminology_id     AS "sourceTerminologyId",
-           target_terminology_id     AS "targetTerminologyId",
-           status, current_dag_node  AS "currentDagNode",
-           power_f1_threshold        AS "powerF1Threshold",
-           power_alpha               AS "powerAlpha",
-           power_beta                AS "powerBeta",
-           computed_holdout_n        AS "computedHoldoutN",
-           greediness_ratio_threshold  AS "greedinesRatioThreshold",
-           near_duplicate_edit_distance AS "nearDuplicateEditDistance",
-           sample_locked_at          AS "sampleLockedAt",
-           holdout_locked_at         AS "holdoutLockedAt",
-           target_terminology_locked_at AS "targetTerminologyLockedAt",
-           prior_terminology_version AS "priorTerminologyVersion",
-           new_terminology_version   AS "newTerminologyVersion",
-           created_by                AS "createdBy",
-           created_at                AS "createdAt",
-           updated_at                AS "updatedAt"
-         FROM projects WHERE id = $1`,
+           p.id, p.name, p.description,
+           p.project_type              AS "projectType",
+           p.source_terminology_id     AS "sourceTerminologyId",
+           p.target_terminology_id     AS "targetTerminologyId",
+           p.status, p.current_dag_node AS "currentDagNode",
+           p.power_f1_threshold        AS "powerF1Threshold",
+           p.power_alpha               AS "powerAlpha",
+           p.power_beta                AS "powerBeta",
+           p.computed_holdout_n        AS "computedHoldoutN",
+           p.greediness_ratio_threshold  AS "greedinesRatioThreshold",
+           p.near_duplicate_edit_distance AS "nearDuplicateEditDistance",
+           p.sample_locked_at          AS "sampleLockedAt",
+           p.holdout_locked_at         AS "holdoutLockedAt",
+           p.target_terminology_locked_at AS "targetTerminologyLockedAt",
+           p.prior_terminology_version AS "priorTerminologyVersion",
+           p.new_terminology_version   AS "newTerminologyVersion",
+           p.created_by                AS "createdBy",
+           p.created_at                AS "createdAt",
+           p.updated_at                AS "updatedAt",
+           sc.id                       AS "sampleConfigId",
+           (SELECT COUNT(*)::int FROM project_terms pt
+            WHERE pt.project_id = p.id
+              AND pt.status NOT IN ('raw', 'long_tail_queued')) AS "sampleSize"
+         FROM projects p
+         LEFT JOIN sample_configs sc
+           ON sc.project_id = p.id
+          AND sc.is_locked  = TRUE
+          AND sc.locked_at  = (
+            SELECT MAX(locked_at) FROM sample_configs
+            WHERE project_id = p.id AND is_locked = TRUE
+          )
+         WHERE p.id = $1`,
         [req.params.id],
       );
       if (rows.length === 0) return res.status(404).json({ error: 'Project not found' });
@@ -197,7 +209,20 @@ router.post(
       const projectId = req.params.id;
       let { configId } = req.body;
 
-      // Create config if not supplied
+      // Guard: refuse to create a new config (or run at all) if holdout is already locked
+      const { rows: guardRows } = await db.query<{ holdoutLockedAt: string | null }>(
+        `SELECT holdout_locked_at AS "holdoutLockedAt" FROM projects WHERE id = $1`,
+        [projectId],
+      );
+      if (!guardRows.length) return res.status(404).json({ error: 'Project not found' });
+      if (guardRows[0].holdoutLockedAt) {
+        return res.status(409).json({
+          error: `Cannot re-sample after the holdout is locked (locked at ${guardRows[0].holdoutLockedAt}). ` +
+                 `Node 3 cannot be run again once Node 4 has completed.`,
+        });
+      }
+
+      // Create config if not supplied — only after the guard passes
       if (!configId) {
         const { strategy, paretoThreshold, randomN } = req.body;
         const { rows } = await db.query(
@@ -218,6 +243,76 @@ router.post(
 
       const result = await sampleTerms({ projectId, configId, triggeredBy: req.user!.id });
       res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------
+// GET /projects/:id/reviewer-pool — list active reviewers + in-pool flag
+// POST /projects/:id/reviewer-pool — add reviewer to pool
+// DELETE /projects/:id/reviewer-pool/:reviewerId — remove from pool
+// -----------------------------------------------------------------
+router.get(
+  '/:id/reviewer-pool',
+  requireRole(UserRole.Administrator),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT
+           u.id,
+           u.email,
+           u.display_name        AS "displayName",
+           (rp.id IS NOT NULL)   AS "inPool",
+           ra.terms_per_day      AS "termsPerDay",
+           ra.hours_per_week     AS "hoursPerWeek"
+         FROM users u
+         LEFT JOIN reviewer_pools rp
+           ON rp.reviewer_id = u.id AND rp.project_id = $1
+         LEFT JOIN reviewer_availability ra
+           ON ra.reviewer_id = u.id AND ra.project_id = $1
+         WHERE u.role = 'reviewer' AND u.is_active = TRUE
+         ORDER BY u.email`,
+        [req.params.id],
+      );
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.post(
+  '/:id/reviewer-pool',
+  requireRole(UserRole.Administrator),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { reviewerId } = req.body;
+      if (!reviewerId) return res.status(400).json({ error: 'reviewerId is required' });
+      await db.query(
+        `INSERT INTO reviewer_pools (project_id, reviewer_id, added_by)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (project_id, reviewer_id) DO NOTHING`,
+        [req.params.id, reviewerId, req.user!.id],
+      );
+      res.status(201).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.delete(
+  '/:id/reviewer-pool/:reviewerId',
+  requireRole(UserRole.Administrator),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await db.query(
+        `DELETE FROM reviewer_pools WHERE project_id = $1 AND reviewer_id = $2`,
+        [req.params.id, req.params.reviewerId],
+      );
+      res.json({ ok: true });
     } catch (err) {
       next(err);
     }

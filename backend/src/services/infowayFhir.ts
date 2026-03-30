@@ -147,17 +147,29 @@ export async function searchSnomedConcepts(
   if (!isInfowayConfigured()) return [];
 
   const qs = new URLSearchParams({
-    url:    SNOMED_VS,
-    filter: query.trim(),
-    count:  String(limit),
+    url:        SNOMED_VS,
+    filter:     query.trim(),
+    count:      String(limit * 2),   // fetch extra to absorb duplicates before slicing
+    activeOnly: 'true',              // exclude retired/inactive concepts
   });
 
   const data = await fhirGet<FhirValueSetExpansion>(`/ValueSet/$expand?${qs.toString()}`);
   const contains = data.expansion?.contains ?? [];
 
-  return contains
-    .filter(c => !c.abstract && c.code && c.display)
-    .map(c => ({ code: c.code, display: c.display }));
+  // Deduplicate by code — Infoway can return the same concept multiple times
+  // when the filter matches both FSN and a synonym
+  const seen = new Set<string>();
+  const results: SnomedConcept[] = [];
+
+  for (const c of contains) {
+    if (c.abstract || !c.code || !c.display) continue;
+    if (seen.has(c.code)) continue;
+    seen.add(c.code);
+    results.push({ code: c.code, display: c.display });
+    if (results.length >= limit) break;
+  }
+
+  return results;
 }
 
 /**

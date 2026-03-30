@@ -449,7 +449,7 @@ export default function MapWorkspace() {
 
                     {searchQuery.trim().length >= 2 && searchResults.length === 0 && (
                       <p className="text-xs text-slate-400 mt-1 pl-1">
-                        No matches in corpus. Try a different term or code.
+                        No matches found. Try different keywords, or mark as No SNOMED match.
                       </p>
                     )}
                   </div>
@@ -492,7 +492,7 @@ export default function MapWorkspace() {
                           >
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-slate-800 truncate">
-                                {t.targetDisplay}
+                                {t.targetDisplay || <span className="italic text-slate-400">No display name</span>}
                                 {t.isAiSuggestion && (
                                   <span className="ml-2 text-xs text-amber-600">(AI)</span>
                                 )}

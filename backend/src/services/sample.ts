@@ -150,6 +150,18 @@ export async function sampleTerms(input: SampleInput): Promise<SampleResult> {
   try {
     await client.query('BEGIN');
 
+    // Guard: refuse to re-sample once holdout is locked
+    const { rows: projGuard } = await client.query<{ holdoutLockedAt: string | null }>(
+      `SELECT holdout_locked_at AS "holdoutLockedAt" FROM projects WHERE id = $1`,
+      [projectId],
+    );
+    if (projGuard[0]?.holdoutLockedAt) {
+      throw new Error(
+        `Cannot re-sample after the holdout is locked (locked at ${projGuard[0].holdoutLockedAt}). ` +
+        `Node 3 cannot be run again once Node 4 has completed.`,
+      );
+    }
+
     // Load sample config
     const { rows: cfgRows } = await client.query<{
       strategy:        string;

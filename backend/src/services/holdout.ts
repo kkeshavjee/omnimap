@@ -105,17 +105,27 @@ export async function holdoutDrawAndAutomatch(
       alpha: number;
       beta:  number;
       targetTerminologyId: string;
+      holdoutLockedAt: string | null;
     }>(
       `SELECT
          power_f1_threshold       AS f0,
          power_alpha              AS alpha,
          power_beta               AS beta,
-         target_terminology_id    AS "targetTerminologyId"
+         target_terminology_id    AS "targetTerminologyId",
+         holdout_locked_at        AS "holdoutLockedAt"
        FROM projects
        WHERE id = $1`,
       [projectId],
     );
     if (projRows.length === 0) throw new Error(`Project ${projectId} not found`);
+
+    // Idempotency guard — refuse to run twice
+    if (projRows[0].holdoutLockedAt) {
+      throw new Error(
+        `Holdout already locked for this project (locked at ${projRows[0].holdoutLockedAt}). ` +
+        `Node 4 cannot be run again once the holdout is drawn.`,
+      );
+    }
     // Parse as numbers — node-postgres returns NUMERIC columns as strings
     const f0    = parseFloat(projRows[0].f0 as unknown as string);
     const alpha = parseFloat(projRows[0].alpha as unknown as string);

@@ -22,22 +22,21 @@
 ### Known gaps to address (post-testing)
 - Forgot password link on login page (not yet implemented)
 - FR-113 deduplication surfacing of known gaps (Phase 2)
-- Production deployment to EC2 (replace Supabase with Aurora Serverless v2, Nginx + Certbot, PM2)
+- **Production deployment to EC2** — no public-facing site yet; reviewers cannot be invited until this is done
+  → EC2 t3.small, Nginx + Certbot TLS, PM2, Aurora Serverless v2 (replace Supabase)
+  → This is the next major milestone after the end-to-end test completes locally
 
-### 🤔 Design decision pending — Automatch confidence tiering
-**Context:** Stop words `\bdue\b`, `\bcaused\b`, `\bNOS\b` are still in the stop word list and are applied
-during automatch. A term like "Anemia due to blood loss" stripped to "Anemia blood loss" could
-false-positive match to the generic "Anemia" SNOMED concept.
+### 🗂️ Architecture Decision Records
+All significant design decisions are documented in `docs/decisions/`. CLAUDE.md captures
+only the current working state; ADRs are the audit trail.
 
-**Decision needed:** Should automatch be tiered by confidence?
-- **Option A (recommended):** Track whether moderate-risk stop words were applied during matching.
-  - Zero stop words stripped → auto-accept (Node 8, as now)
-  - Moderate-risk words stripped → route to adjudicator "quick confirm" queue instead
-- **Option B:** All auto-matches go to adjudicator bulk-confirm screen before canonicalising
-- **Option C:** Leave as-is; rely on holdout F1 scoring to expose systematic errors post-testing
-
-**Current state:** Option C (do nothing for now). Revisit after first end-to-end test run with
-real data — the holdout score will show whether the moderate-risk strips are causing wrong matches.
+| ADR | Title | Status |
+|---|---|---|
+| 001 | Hosting: EC2 over Lambda | Accepted |
+| 002 | Automatch: match PT + synonyms, not FSN only | Accepted |
+| 003 | Automatch confidence tiering: deferred pending holdout evidence | Accepted |
+| 004 | DAG node idempotency guards (Nodes 3 + 4) | Accepted |
+| 005 | Infoway search: activeOnly + deduplication by code | Accepted |
 
 Implementation of Option A requires:
 1. `holdout.ts` — track `matchRequiredStripOf: string[]` during the match loop
