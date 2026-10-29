@@ -2,10 +2,10 @@
 
 ---
 
-## 🔖 NEXT SESSION — Pick up here (last updated 2026-03-20)
+## 🔖 NEXT SESSION — Pick up here (last updated 2026-03-28)
 
 ### Immediate actions (in order)
-1. **Create a feature branch** — `git checkout -b feature/end-to-end-test` before touching any code
+1. **Create a feature branch** — `git checkout -b feature/end-to-end-uat` before touching any code
 2. **Invite 2 reviewer accounts** via Admin → Users → Invite User (role: Reviewer)
 3. **Karim creates his own adjudicator account** via Admin → Users → Invite User (role: Adjudicator)
 4. **Run the full pipeline end-to-end** with a real or synthetic dataset:
@@ -13,14 +13,14 @@
    - Both reviewers log in and map their assigned terms (including at least one SNOMED gap)
    - Disagreement terms route to adjudication queue
    - Karim adjudicates as Adjudicator
-   - Node 8 Canonicalise → Node 13 Export + Gap Report
-5. **Fix the pre-existing TypeScript warning** in `frontend/src/features/admin/UsersPage.tsx` line 174 (`action` declared but never read) — minor cleanup
+   - Node 8 Canonicalise → Node 9 Regex Pipeline → Node 10 Validate → Node 11 Corpus Update → Node 12 Score
+   - Node 13 Export (CSV + JSON) + Gap Report (CSV + JSON)
+5. **Verify Score panel** shows F1, 95% CIs, and pass/fail badge for the holdout set
 
 ### Waiting on
 - ✅ **Infoway FHIR credentials received 2026-03-28** — added to `backend/.env`. Backend restarted. Live SNOMED CT Canadian Edition search + automatch active.
 
 ### Known gaps to address (post-testing)
-- Forgot password link on login page (not yet implemented)
 - FR-113 deduplication surfacing of known gaps (Phase 2)
 - Production deployment to EC2 (replace Supabase with Aurora Serverless v2, Nginx + Certbot, PM2)
 
@@ -286,17 +286,22 @@ MFA required for Administrator and Adjudicator.
 ## Implementation Status (March 2026)
 
 ### Completed
-- **Phase A** — Migrations 001–004, TypeScript types, auth + RBAC middleware
+- **Phase A** — Migrations 001–005, TypeScript types, auth + RBAC middleware
 - **Auth flow** — Login, forgot-password (2-step Cognito reset), new-password-required challenge on first login
-- **Admin UI** — Projects page, Project detail, Users management (invite/list/edit/deactivate), Regex Library page
-- **Favicon** — `frontend/public/icon.png` (Omni Health Nexus logo)
+- **Phase B** — DAG Nodes 0–5: projectInit, ingest, deduplicate, sample, holdout+automatch, allocate
+- **Phase C** — Frontend shell, admin dashboard (Projects, ProjectDetail, Users, Regex Library), reviewer workspace (MapWorkspace, ReviewerProjectSelect)
+- **Phase D** — Node 7 Adjudicate (AdjudicatorWorkspace + routes), Node 8 Canonicalise
+- **Phase E** — Node 9 Regex Pipeline (5-layer TypeScript service), Node 10 Regex Validate (report), Node 11 Corpus Update
+- **Phase F** — Node 12 Score (F1/P/R with 95% Wilson CIs, pass/fail), Node 13 Export (JSON + CSV + SNOMED Gap Report)
+- **Infoway FHIR** — Live SNOMED CT Canadian Edition search + automatch via `infowayFhir.ts`
 - **Seed data** — 399 qualifier patterns loaded (negation×77, stop_word×44, location×225, timing×14, family_history×18, causation×7, screening×14)
-- **DAG Nodes 1–3** — Ingest, Deduplicate, Sample all working end-to-end
+- **Audit log UI** — AuditLogPage.tsx (admin + auditor)
+- **Favicon** — `frontend/public/icon.png` (Omni Health Nexus logo)
 
 ### Pending (next up)
-- EC2 deployment (Nginx + PM2 + Certbot)
-- Phase B: Nodes 0–5 (ingest through allocation) — Nodes 1–3 working; Node 4 holdout+automatch next
-- Phase C: Reviewer workspace (Node 6 MAP)
+- EC2 deployment (Nginx + PM2 + Certbot; replace Supabase with Aurora Serverless v2)
+- Phase G: AI suggestion agent (blocked — embedding model decision outstanding; see Open Questions)
+- Post-UAT: automatch confidence tiering (Option A — see Design Decision note above)
 
 ---
 

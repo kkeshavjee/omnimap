@@ -13,6 +13,9 @@ import { sampleTerms }                               from '../services/sample';
 import { holdoutDrawAndAutomatch }                   from '../services/holdout';
 import { allocateTerms_service }                     from '../services/allocate';
 import { canonicaliseTerms }                         from '../services/canonicalise';
+import { runRegexPipeline, getRegexValidateReport,
+         runCorpusUpdate }                           from '../services/regexPipeline';
+import { runHoldoutScoring }                         from '../services/score';
 import { requireRole }                               from '../middleware/rbac';
 import { UserRole, ProjectType, SamplingStrategy }  from '../types/enums';
 
@@ -388,6 +391,79 @@ router.get(
       }
 
       res.json({ projectId, exportedAt: new Date().toISOString(), total: rows.length, rows });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------
+// POST /projects/:id/regex-pipeline  — Node 9
+// -----------------------------------------------------------------
+router.post(
+  '/:id/regex-pipeline',
+  requireRole(UserRole.Administrator),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await runRegexPipeline({
+        projectId:   req.params.id,
+        triggeredBy: req.user!.id,
+      });
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------
+// GET /projects/:id/regex-report  — Node 10 (read-only validate)
+// -----------------------------------------------------------------
+router.get(
+  '/:id/regex-report',
+  requireRole(UserRole.Administrator, UserRole.Auditor),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const report = await getRegexValidateReport(req.params.id);
+      res.json(report);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------
+// POST /projects/:id/corpus-update  — Node 11
+// -----------------------------------------------------------------
+router.post(
+  '/:id/corpus-update',
+  requireRole(UserRole.Administrator),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await runCorpusUpdate({
+        projectId:   req.params.id,
+        triggeredBy: req.user!.id,
+      });
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------
+// POST /projects/:id/score  — Node 12
+// -----------------------------------------------------------------
+router.post(
+  '/:id/score',
+  requireRole(UserRole.Administrator),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await runHoldoutScoring({
+        projectId:   req.params.id,
+        triggeredBy: req.user!.id,
+      });
+      res.json(result);
     } catch (err) {
       next(err);
     }

@@ -377,6 +377,33 @@ export const api = {
       ),
 
     gapReportCsvUrl: (projectId: string) => `/api/projects/${projectId}/gap-report?format=csv`,
+
+    regexPipeline: (projectId: string) =>
+      request<{ processed: number; r01ResidualUpper: number; r02NoMatch: number; overGreedy: number }>(
+        'POST', `/projects/${projectId}/regex-pipeline`,
+      ),
+
+    regexReport: (projectId: string) =>
+      request<{
+        totalRuns: number; r01ResidualUpper: number; r02NoMatch: number;
+        overGreedy: number; overGreedyThreshold: number;
+        r01Rate: number; r02Rate: number; overGreedyRate: number;
+      }>('GET', `/projects/${projectId}/regex-report`),
+
+    corpusUpdate: (projectId: string) =>
+      request<{ message: string }>('POST', `/projects/${projectId}/corpus-update`),
+
+    score: (projectId: string) =>
+      request<{
+        sessionId: string; holdoutN: number;
+        truePositives: number; falsePositives: number;
+        trueNegatives: number; falseNegatives: number;
+        precision: number; recall: number; f1: number;
+        precisionCiLow: number; precisionCiHigh: number;
+        recallCiLow: number; recallCiHigh: number;
+        f1CiLow: number; f1CiHigh: number;
+        f1Threshold: number; passed: boolean;
+      }>('POST', `/projects/${projectId}/score`),
   },
 
   // Adjudicator
